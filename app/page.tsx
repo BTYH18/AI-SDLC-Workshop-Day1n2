@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Todo, Priority } from '@/lib/types'
+import { Todo, Priority, Subtask } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 
 export default function Home() {
@@ -19,6 +19,9 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [expandedTodoIds, setExpandedTodoIds] = useState<number[]>([])
+  const [subtasksByTodoId, setSubtasksByTodoId] = useState<Record<number, Subtask[]>>({})
+  const [newSubtaskTitleByTodoId, setNewSubtaskTitleByTodoId] = useState<Record<number, string>>({})
 
   // Fetch todos on mount
   useEffect(() => {
@@ -44,7 +47,19 @@ export default function Home() {
       const res = await fetch('/api/todos')
       if (!res.ok) throw new Error('Failed to fetch todos')
       const data = await res.json()
-      setTodos(data.data || [])
+      const nextTodos = data.data || []
+      setTodos(nextTodos)
+      const activeTodoIds = new Set<number>(nextTodos.map((todo: Todo) => todo.id))
+      setSubtasksByTodoId((prev) => {
+        const next = Object.entries(prev).reduce<Record<number, Subtask[]>>((acc, [key, value]) => {
+          const parsedKey = Number(key)
+          if (activeTodoIds.has(parsedKey)) {
+            acc[parsedKey] = value
+          }
+          return acc
+        }, {})
+        return next
+      })
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
@@ -126,6 +141,103 @@ export default function Home() {
     }
   }
 
+  const fetchSubtasks = async (todoId: number) => {
+    const res = await fetch(`/api/todos/${todoId}/subtasks`)
+    if (!res.ok) {
+      const data = await res.json()
+      throw new Error(data.error || 'Failed to fetch subtasks')
+    }
+
+    const data = await res.json()
+    setSubtasksByTodoId((prev) => ({
+      ...prev,
+      [todoId]: data.data?.subtasks || [],
+    }))
+  }
+
+  const toggleSubtaskPanel = async (todoId: number) => {
+    const isExpanded = expandedTodoIds.includes(todoId)
+    if (isExpanded) {
+      setExpandedTodoIds((prev) => prev.filter((id) => id !== todoId))
+      return
+    }
+
+    setExpandedTodoIds((prev) => [...prev, todoId])
+    try {
+      await fetchSubtasks(todoId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const handleCreateSubtask = async (todoId: number) => {
+    const nextTitle = newSubtaskTitleByTodoId[todoId]?.trim() || ''
+    if (!nextTitle) return
+
+    try {
+      const res = await fetch(`/api/todos/${todoId}/subtasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: nextTitle }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to create subtask')
+
+      setNewSubtaskTitleByTodoId((prev) => ({
+        ...prev,
+        [todoId]: '',
+      }))
+      await fetchSubtasks(todoId)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const handleUpdateSubtask = async (todoId: number, subtaskId: number, update: { title?: string; completed?: boolean; position?: number }) => {
+    try {
+      const res = await fetch(`/api/todos/${todoId}/subtasks/${subtaskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(update),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to update subtask')
+
+      await fetchSubtasks(todoId)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const handleDeleteSubtask = async (todoId: number, subtaskId: number) => {
+    try {
+      const res = await fetch(`/api/todos/${todoId}/subtasks/${subtaskId}`, {
+        method: 'DELETE',
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to delete subtask')
+      await fetchSubtasks(todoId)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const getSubtaskProgress = (todoId: number) => {
+    const subtasks = subtasksByTodoId[todoId] || []
+    if (subtasks.length === 0) {
+      return { total: 0, completed: 0, percent: 0 }
+    }
+
+    const completed = subtasks.filter((subtask) => subtask.completed).length
+    const percent = Math.round((completed / subtasks.length) * 100)
+    return { total: subtasks.length, completed, percent }
+  }
+
   const getPriorityColor = (priority: Priority) => {
     switch (priority) {
       case 'high':
@@ -166,7 +278,10 @@ export default function Home() {
 
   // Filter todos based on search and priority
   const filteredTodos = todos.filter((todo) => {
-    const matchesSearch = todo.title.toLowerCase().includes(searchQuery.toLowerCase())
+    const query = searchQuery.toLowerCase()
+    const matchesTitle = todo.title.toLowerCase().includes(query)
+    const matchesSubtask = (subtasksByTodoId[todo.id] || []).some((subtask) => subtask.title.toLowerCase().includes(query))
+    const matchesSearch = matchesTitle || matchesSubtask
     const matchesPriority = priorityFilter === 'all' || todo.priority === priorityFilter
     return matchesSearch && matchesPriority
   })
@@ -325,43 +440,137 @@ export default function Home() {
           <div className="mb-8">
             <h3 className="text-xl font-semibold text-white mb-4">Active Todos ({activeTodos.length})</h3>
             <div className="space-y-2">
-              {activeTodos.map((todo) => (
-                <div
-                  key={todo.id}
-                  className={`bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm rounded-lg p-4 flex items-center gap-4 transition-colors ${getPriorityBgColor(todo.priority)} ${
-                    isOverdue(todo) ? 'border-l-4 border-l-red-500' : ''
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={todo.completed}
-                    onChange={() => handleToggle(todo)}
-                    className="w-5 h-5 rounded border-2 border-slate-600 bg-slate-700 text-blue-500 focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                  />
+              {activeTodos.map((todo) => {
+                const isExpanded = expandedTodoIds.includes(todo.id)
+                const subtasks = subtasksByTodoId[todo.id] || []
+                const progress = getSubtaskProgress(todo.id)
 
-                  <div className="flex-1 min-w-0">
-                    <p className={`font-medium text-base break-words ${isOverdue(todo) ? 'text-red-400' : 'text-white'}`}>
-                      {todo.title}
-                    </p>
-                    {todo.dueDate && (
-                      <p className={`text-xs mt-1.5 font-medium ${isOverdue(todo) ? 'text-red-400' : 'text-slate-400'}`}>
-                        📅 {formatSingaporeDate(new Date(todo.dueDate))}
-                      </p>
+                return (
+                  <div
+                    key={todo.id}
+                    className={`bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm rounded-lg p-4 transition-colors ${getPriorityBgColor(todo.priority)} ${
+                      isOverdue(todo) ? 'border-l-4 border-l-red-500' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="checkbox"
+                        checked={todo.completed}
+                        onChange={() => handleToggle(todo)}
+                        className="w-5 h-5 rounded border-2 border-slate-600 bg-slate-700 text-blue-500 focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                      />
+
+                      <div className="flex-1 min-w-0">
+                        <p className={`font-medium text-base break-words ${isOverdue(todo) ? 'text-red-400' : 'text-white'}`}>
+                          {todo.title}
+                        </p>
+                        {todo.dueDate && (
+                          <p className={`text-xs mt-1.5 font-medium ${isOverdue(todo) ? 'text-red-400' : 'text-slate-400'}`}>
+                            📅 {formatSingaporeDate(new Date(todo.dueDate))}
+                          </p>
+                        )}
+                        {subtasks.length > 0 && (
+                          <div className="mt-2">
+                            <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                              <span>Progress</span>
+                              <span>{progress.completed}/{progress.total} ({progress.percent}%)</span>
+                            </div>
+                            <div className="h-2 bg-slate-700 rounded-full overflow-hidden" data-testid={`progress-bar-${todo.id}`}>
+                              <div className="h-2 bg-blue-500 rounded-full transition-all" style={{ width: `${progress.percent}%` }} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getPriorityColor(todo.priority)}`}>
+                        {todo.priority.toUpperCase()}
+                      </div>
+
+                      <button
+                        onClick={() => toggleSubtaskPanel(todo.id)}
+                        className="text-slate-400 hover:text-blue-400 transition-colors"
+                        aria-label="Toggle subtasks"
+                      >
+                        {isExpanded ? '▾' : '▸'}
+                      </button>
+
+                      <button
+                        onClick={() => setDeleteConfirm(todo.id)}
+                        className="text-slate-400 hover:text-red-500 transition-colors"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-4 pl-9 border-l border-slate-700/70 space-y-2">
+                        {subtasks.length === 0 && (
+                          <p className="text-sm text-slate-500">No subtasks yet</p>
+                        )}
+
+                        {subtasks.map((subtask, index) => (
+                          <div key={subtask.id} className="flex items-center gap-2" data-testid="subtask-item">
+                            <input
+                              type="checkbox"
+                              checked={subtask.completed}
+                              onChange={() => handleUpdateSubtask(todo.id, subtask.id, { completed: !subtask.completed })}
+                              className="w-4 h-4 rounded border border-slate-600 bg-slate-700 text-blue-500 focus:ring-blue-500"
+                            />
+                            <p className={`flex-1 text-sm ${subtask.completed ? 'line-through text-slate-500' : 'text-slate-300'}`}>
+                              {subtask.title}
+                            </p>
+                            <button
+                              type="button"
+                              disabled={index === 0}
+                              onClick={() => handleUpdateSubtask(todo.id, subtask.id, { position: subtask.position - 1 })}
+                              className="px-2 py-0.5 text-xs rounded bg-slate-700 text-slate-300 disabled:opacity-40"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              disabled={index === subtasks.length - 1}
+                              onClick={() => handleUpdateSubtask(todo.id, subtask.id, { position: subtask.position + 1 })}
+                              className="px-2 py-0.5 text-xs rounded bg-slate-700 text-slate-300 disabled:opacity-40"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSubtask(todo.id, subtask.id)}
+                              className="text-slate-500 hover:text-red-500 transition-colors"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <input
+                            type="text"
+                            value={newSubtaskTitleByTodoId[todo.id] || ''}
+                            onChange={(e) => setNewSubtaskTitleByTodoId((prev) => ({ ...prev, [todo.id]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                handleCreateSubtask(todo.id)
+                              }
+                            }}
+                            placeholder="Add subtask"
+                            className="flex-1 px-3 py-2 bg-slate-700/60 border border-slate-600 rounded text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleCreateSubtask(todo.id)}
+                            className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded"
+                          >
+                            Add Subtask
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
-
-                  <div className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getPriorityColor(todo.priority)}`}>
-                    {todo.priority.toUpperCase()}
-                  </div>
-
-                  <button
-                    onClick={() => setDeleteConfirm(todo.id)}
-                    className="text-slate-400 hover:text-red-500 transition-colors"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}

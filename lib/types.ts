@@ -11,6 +11,16 @@ export interface Todo {
   updatedAt: string
 }
 
+export interface Subtask {
+  id: number
+  todoId: number
+  title: string
+  position: number
+  completed: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export interface CreateTodoInput {
   title: string
   priority?: Priority
@@ -22,6 +32,16 @@ export interface UpdateTodoInput {
   priority?: Priority
   dueDate?: string | null
   completed?: boolean
+}
+
+export interface CreateSubtaskInput {
+  title: string
+}
+
+export interface UpdateSubtaskInput {
+  title?: string
+  completed?: boolean
+  position?: number
 }
 
 export interface ApiResponse<T> {
