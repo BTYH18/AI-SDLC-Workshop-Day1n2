@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { todoDB } from '@/lib/db'
+import { getSession } from '@/lib/auth'
 import { UpdateTodoInput, ApiResponse, Todo } from '@/lib/types'
 import { isFutureDate } from '@/lib/timezone'
 
@@ -12,6 +13,14 @@ interface RouteParams {
  */
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
+    const session = getSession(request)
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Not authenticated' } as ApiResponse<null>,
+        { status: 401 }
+      )
+    }
+
     const { id } = await params
     const todoId = parseInt(id, 10)
 
@@ -22,7 +31,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    const todo = await todoDB.getById(todoId)
+    const todo = await todoDB.getById(session.userId, todoId)
     if (!todo) {
       return NextResponse.json(
         { success: false, error: 'Todo not found' } as ApiResponse<null>,
@@ -47,6 +56,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
  */
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
+    const session = getSession(request)
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Not authenticated' } as ApiResponse<null>,
+        { status: 401 }
+      )
+    }
+
     const { id } = await params
     const todoId = parseInt(id, 10)
 
@@ -85,7 +102,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    const todo = await todoDB.update(todoId, {
+    const todo = await todoDB.update(session.userId, todoId, {
       title: body.title?.trim(),
       priority: body.priority,
       dueDate: body.dueDate,
@@ -116,6 +133,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
  */
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
+    const session = getSession(request)
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Not authenticated' } as ApiResponse<null>,
+        { status: 401 }
+      )
+    }
+
     const { id } = await params
     const todoId = parseInt(id, 10)
 
@@ -126,7 +151,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    const success = await todoDB.delete(todoId)
+    const success = await todoDB.delete(session.userId, todoId)
     if (!success) {
       return NextResponse.json(
         { success: false, error: 'Todo not found' } as ApiResponse<null>,

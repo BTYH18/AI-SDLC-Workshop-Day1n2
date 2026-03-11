@@ -51,6 +51,14 @@ export async function initializeDb() {
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_created_at ON todos(created_at)')
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_due_date ON todos(due_date)')
 
+    // migration: scope todos by user
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN user_id INTEGER')
+    } catch {
+      // Column already exists
+    }
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id)')
+
     // auth tables
     sqlDb.run(`
       CREATE TABLE IF NOT EXISTS users (
@@ -72,6 +80,13 @@ export async function initializeDb() {
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `)
+
+    // backfill legacy todos to first user so existing data remains visible
+    const firstUserRes = sqlDb.exec('SELECT id FROM users ORDER BY id LIMIT 1')
+    const firstUserId = firstUserRes[0]?.values?.[0]?.[0]
+    if (firstUserId) {
+      sqlDb.run('UPDATE todos SET user_id = ? WHERE user_id IS NULL', [firstUserId])
+    }
 
     saveDb()
   })()
@@ -97,15 +112,15 @@ async function getDb(): Promise<any> {
 
 // CRUD Operations
 export const todoDB = {
-  create: async (input: CreateTodoInput): Promise<Todo> => {
+  create: async (userId: number, input: CreateTodoInput): Promise<Todo> => {
     const db = await getDb()
     const now = new Date().toISOString()
     const priority = input.priority || 'medium'
 
     db.run(
-      `INSERT INTO todos (title, priority, due_date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [input.title, priority, input.dueDate || null, now, now]
+      `INSERT INTO todos (user_id, title, priority, due_date, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, input.title, priority, input.dueDate || null, now, now]
     )
 
     // Get the last inserted ID
@@ -125,13 +140,14 @@ export const todoDB = {
     }
   },
 
-  getAll: async (): Promise<Todo[]> => {
+  getAll: async (userId: number): Promise<Todo[]> => {
     const db = await getDb()
     const result = db.exec(`
       SELECT id, title, priority, due_date as dueDate, completed, created_at as createdAt, updated_at as updatedAt
       FROM todos
+      WHERE user_id = ?
       ORDER BY priority = 'high' DESC, priority = 'medium' DESC, due_date ASC, created_at DESC
-    `)
+    `, [userId])
 
     if (!result[0]) return []
 
@@ -148,12 +164,12 @@ export const todoDB = {
     })
   },
 
-  getById: async (id: number): Promise<Todo | null> => {
+  getById: async (userId: number, id: number): Promise<Todo | null> => {
     const db = await getDb()
     const result = db.exec(
       `SELECT id, title, priority, due_date as dueDate, completed, created_at as createdAt, updated_at as updatedAt
-       FROM todos WHERE id = ?`,
-      [id]
+       FROM todos WHERE id = ? AND user_id = ?`,
+      [id, userId]
     )
 
     if (!result[0] || !result[0].values[0]) return null
@@ -171,9 +187,9 @@ export const todoDB = {
     }
   },
 
-  update: async (id: number, input: UpdateTodoInput): Promise<Todo | null> => {
+  update: async (userId: number, id: number, input: UpdateTodoInput): Promise<Todo | null> => {
     const db = await getDb()
-    const todo = await todoDB.getById(id)
+    const todo = await todoDB.getById(userId, id)
     if (!todo) return null
 
     const now = new Date().toISOString()
@@ -204,18 +220,20 @@ export const todoDB = {
     values.push(id)
 
     db.run(
-      `UPDATE todos SET ${updates.join(', ')} WHERE id = ?`,
-      values
+      `UPDATE todos SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+      [...values, userId]
     )
 
     saveDb()
 
-    return todoDB.getById(id)
+    return todoDB.getById(userId, id)
   },
 
-  delete: async (id: number): Promise<boolean> => {
+  delete: async (userId: number, id: number): Promise<boolean> => {
     const db = await getDb()
-    db.run('DELETE FROM todos WHERE id = ?', [id])
+    const todo = await todoDB.getById(userId, id)
+    if (!todo) return false
+    db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
   },

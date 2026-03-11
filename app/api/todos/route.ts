@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { todoDB } from '@/lib/db'
+import { getSession } from '@/lib/auth'
 import { CreateTodoInput, ApiResponse, Todo } from '@/lib/types'
 import { isFutureDate } from '@/lib/timezone'
 
@@ -8,7 +9,15 @@ import { isFutureDate } from '@/lib/timezone'
  */
 export async function GET(request: NextRequest) {
   try {
-    const todos = await todoDB.getAll()
+    const session = getSession(request)
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Not authenticated' } as ApiResponse<null>,
+        { status: 401 }
+      )
+    }
+
+    const todos = await todoDB.getAll(session.userId)
     return NextResponse.json({
       success: true,
       data: todos,
@@ -27,6 +36,14 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
+    const session = getSession(request)
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Not authenticated' } as ApiResponse<null>,
+        { status: 401 }
+      )
+    }
+
     const body = await request.json() as CreateTodoInput
 
     // Validation
@@ -53,7 +70,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const todo = await todoDB.create({
+    const todo = await todoDB.create(session.userId, {
       title: body.title.trim(),
       priority: body.priority,
       dueDate: body.dueDate,
