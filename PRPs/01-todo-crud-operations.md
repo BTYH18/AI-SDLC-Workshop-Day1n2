@@ -36,7 +36,7 @@ A foundational feature that allows users to create, read, update and delete todo
   - `title` required, non-empty, trimmed
   - `due_date` if present must be at least 1 minute in future using `getSingaporeNow()`
   - `priority` defaults to 'medium' if omitted
-- Use synchronous database operations via `better-sqlite3` in `lib/db.ts`.
+- Use synchronous database operations via `sql.js` in `lib/db.ts`.
 - API responses follow the `ApiResponse<T>` format.
 - Client components implement optimistic updates and rollback on error.
 

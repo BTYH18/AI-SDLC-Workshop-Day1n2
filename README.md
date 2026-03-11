@@ -192,8 +192,15 @@ cd /path/to/todo-app
 
 ### Install Dependencies
 ```bash
-# Install all npm packages (this may take a few minutes)
+# Install all npm packages defined in package.json (this may take a few minutes)
 npm install
+```
+
+> This command reads your `package.json` and installs **all listed dependencies and devDependencies**, so every package needed by the app will be pulled in automatically.
+
+Additionally, the project uses Playwright for end‑to‑end tests, so after the npm install you should also install the browser binaries:
+```bash
+npx playwright install --with-deps
 ```
 
 You should see output like:

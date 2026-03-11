@@ -2,12 +2,12 @@
 
 ## Architecture Overview
 
-This is a **Next.js 16** todo application with WebAuthn authentication, using **better-sqlite3** for data persistence and **Playwright** for E2E testing. All operations use **Singapore timezone** (`Asia/Singapore`).
+This is a **Next.js 16** todo application with WebAuthn authentication, using **sql.js** for data persistence and **Playwright** for E2E testing. All operations use **Singapore timezone** (`Asia/Singapore`).
 
 ### Core Stack
 - **Frontend**: Next.js App Router, React 19, Tailwind CSS 4
 - **Backend**: Next.js API routes (no separate server)
-- **Database**: SQLite via `better-sqlite3` (`todos.db` in project root)
+- **Database**: SQLite via `sql.js` (`todos.db` in project root)
 - **Auth**: WebAuthn/Passkeys with JWT sessions (no passwords)
 - **Testing**: Playwright E2E tests
 
@@ -34,7 +34,7 @@ This is a **Next.js 16** todo application with WebAuthn authentication, using **
 ### 2. Database Architecture
 **Single source of truth**: `lib/db.ts` exports all database interfaces and CRUD operations (~700 lines).
 
-**Technology:** `better-sqlite3` - synchronous SQLite library (no async/await needed for DB operations). Database file: `todos.db` in project root.
+**Technology:** `sql.js` - pure JavaScript SQLite library (Node 24 compatible, no native compilation). Database file: `todos.db` in project root. Operations are synchronous after initialization.
 
 Key tables:
 - `users` → `authenticators` (one-to-many)
