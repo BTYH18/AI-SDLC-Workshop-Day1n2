@@ -8,9 +8,11 @@ export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [error, setError] = useState<string | null>(null)
+  const [isBypassing, setIsBypassing] = useState(false)
   const [isSupported, setIsSupported] = useState<boolean | null>(null)
   const [authenticatorAvailable, setAuthenticatorAvailable] = useState<boolean | null>(null)
   const router = useRouter()
+  const isDev = process.env.NODE_ENV !== 'production'
 
   useEffect(() => {
     async function checkSupport() {
@@ -123,6 +125,26 @@ export default function LoginPage() {
     }
   }
 
+  const handleDevBypass = async () => {
+    try {
+      setIsBypassing(true)
+      setError(null)
+      const res = await fetch('/api/auth/dev-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data?.error || 'Dev bypass failed')
+      }
+      router.push('/')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Dev bypass failed')
+    } finally {
+      setIsBypassing(false)
+    }
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-900">
       <div className="bg-slate-800 p-8 rounded-lg shadow-lg w-full max-w-md">
@@ -158,6 +180,16 @@ export default function LoginPage() {
           >
             {mode === 'register' ? 'Register' : 'Login'}
           </button>
+          {isDev && (
+            <button
+              type="button"
+              onClick={handleDevBypass}
+              disabled={isBypassing}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-900 text-white py-2 rounded"
+            >
+              {isBypassing ? 'Bypassing...' : 'Dev Bypass Login (test account)'}
+            </button>
+          )}
         </form>
         <div className="text-sm text-slate-400 mt-4">
           <button
