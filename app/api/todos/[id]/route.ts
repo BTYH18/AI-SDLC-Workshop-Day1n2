@@ -83,6 +83,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
     }
     const validPatterns = new Set(['daily', 'weekly', 'monthly', 'yearly'])
+    const validReminderMinutes = new Set([15, 30, 60, 120, 1440, 2880, 10080])
 
     // Validation
     if (body.title !== undefined) {
@@ -130,11 +131,30 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
     }
 
+    if (body.reminderMinutes !== undefined && body.reminderMinutes !== null) {
+      if (!validReminderMinutes.has(body.reminderMinutes)) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid reminder timing' } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+    }
+
+    const nextReminderMinutes =
+      body.reminderMinutes !== undefined ? body.reminderMinutes : currentTodo.reminderMinutes
+    if (nextReminderMinutes !== null && !nextDueDate) {
+      return NextResponse.json(
+        { success: false, error: 'Due date is required when reminder is set' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
     const todo = await todoDB.update(session.userId, todoId, {
       title: body.title?.trim(),
       priority: body.priority,
       dueDate: body.dueDate,
       recurrencePattern: body.recurrencePattern,
+      reminderMinutes: body.reminderMinutes,
       completed: body.completed,
     })
 
@@ -153,6 +173,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         priority: todo.priority,
         dueDate: nextDueDateIso,
         recurrencePattern: todo.recurrencePattern,
+        reminderMinutes: todo.reminderMinutes,
       })
     }
 

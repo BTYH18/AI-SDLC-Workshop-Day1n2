@@ -8,6 +8,8 @@ export interface Todo {
   priority: Priority
   dueDate: string | null
   recurrencePattern: RecurrencePattern | null
+  reminderMinutes: number | null
+  lastNotificationSent: string | null
   completed: boolean
   createdAt: string
   updatedAt: string
@@ -18,6 +20,7 @@ export interface CreateTodoInput {
   priority?: Priority
   dueDate?: string
   recurrencePattern?: RecurrencePattern
+  reminderMinutes?: number | null
 }
 
 export interface UpdateTodoInput {
@@ -25,6 +28,8 @@ export interface UpdateTodoInput {
   priority?: Priority
   dueDate?: string | null
   recurrencePattern?: RecurrencePattern | null
+  reminderMinutes?: number | null
+  lastNotificationSent?: string | null
   completed?: boolean
 }
 

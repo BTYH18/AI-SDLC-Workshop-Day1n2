@@ -66,6 +66,18 @@ export async function initializeDb() {
       // Column already exists
     }
 
+    // migration: reminders/notifications columns
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN reminder_minutes INTEGER')
+    } catch {
+      // Column already exists
+    }
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN last_notification_sent TEXT')
+    } catch {
+      // Column already exists
+    }
+
     // auth tables
     sqlDb.run(`
       CREATE TABLE IF NOT EXISTS users (
@@ -125,9 +137,28 @@ export const todoDB = {
     const priority = input.priority || 'medium'
 
     db.run(
-      `INSERT INTO todos (user_id, title, priority, due_date, recurrence_pattern, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [userId, input.title, priority, input.dueDate || null, input.recurrencePattern || null, now, now]
+      `INSERT INTO todos (
+        user_id,
+        title,
+        priority,
+        due_date,
+        recurrence_pattern,
+        reminder_minutes,
+        last_notification_sent,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId,
+        input.title,
+        priority,
+        input.dueDate || null,
+        input.recurrencePattern || null,
+        input.reminderMinutes ?? null,
+        null,
+        now,
+        now,
+      ]
     )
 
     // Get the last inserted ID
@@ -142,6 +173,8 @@ export const todoDB = {
       priority: priority as Priority,
       dueDate: input.dueDate || null,
       recurrencePattern: input.recurrencePattern || null,
+      reminderMinutes: input.reminderMinutes ?? null,
+      lastNotificationSent: null,
       completed: false,
       createdAt: now,
       updatedAt: now,
@@ -151,7 +184,7 @@ export const todoDB = {
   getAll: async (userId: number): Promise<Todo[]> => {
     const db = await getDb()
     const result = db.exec(`
-      SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, completed, created_at as createdAt, updated_at as updatedAt
+      SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, completed, created_at as createdAt, updated_at as updatedAt
       FROM todos
       WHERE user_id = ?
       ORDER BY priority = 'high' DESC, priority = 'medium' DESC, due_date ASC, created_at DESC
@@ -175,7 +208,7 @@ export const todoDB = {
   getById: async (userId: number, id: number): Promise<Todo | null> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, completed, created_at as createdAt, updated_at as updatedAt
+      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, completed, created_at as createdAt, updated_at as updatedAt
        FROM todos WHERE id = ? AND user_id = ?`,
       [id, userId]
     )
@@ -220,6 +253,14 @@ export const todoDB = {
       updates.push('recurrence_pattern = ?')
       values.push(input.recurrencePattern)
     }
+    if (input.reminderMinutes !== undefined) {
+      updates.push('reminder_minutes = ?')
+      values.push(input.reminderMinutes)
+    }
+    if (input.lastNotificationSent !== undefined) {
+      updates.push('last_notification_sent = ?')
+      values.push(input.lastNotificationSent)
+    }
     if (input.completed !== undefined) {
       updates.push('completed = ?')
       values.push(input.completed ? 1 : 0)
@@ -248,6 +289,42 @@ export const todoDB = {
     db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
+  },
+
+  getDueNotifications: async (userId: number, nowIso: string): Promise<Array<{ id: number; title: string }>> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, title
+       FROM todos
+       WHERE user_id = ?
+         AND completed = 0
+         AND due_date IS NOT NULL
+         AND reminder_minutes IS NOT NULL
+         AND datetime(due_date) <= datetime(?, '+' || reminder_minutes || ' minutes')
+         AND (
+           last_notification_sent IS NULL
+           OR datetime(last_notification_sent) <= datetime(?, '-15 minutes')
+         )`,
+      [userId, nowIso, nowIso]
+    )
+
+    if (!result[0]) return []
+
+    const values = result[0].values
+    return values.map((row: any[]) => ({ id: Number(row[0]), title: String(row[1]) }))
+  },
+
+  markNotificationsSent: async (userId: number, todoIds: number[], sentAtIso: string): Promise<void> => {
+    if (todoIds.length === 0) return
+    const db = await getDb()
+    const placeholders = todoIds.map(() => '?').join(',')
+    db.run(
+      `UPDATE todos
+       SET last_notification_sent = ?, updated_at = ?
+       WHERE user_id = ? AND id IN (${placeholders})`,
+      [sentAtIso, sentAtIso, userId, ...todoIds]
+    )
+    saveDb()
   },
 }
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Todo, Priority, RecurrencePattern } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
+import { useNotifications } from '@/lib/hooks/useNotifications'
 
 export default function Home() {
   const router = useRouter()
@@ -13,6 +14,7 @@ export default function Home() {
   const [formTitle, setFormTitle] = useState('')
   const [formPriority, setFormPriority] = useState<Priority>('medium')
   const [formDueDate, setFormDueDate] = useState('')
+  const [formReminderMinutes, setFormReminderMinutes] = useState<number | ''>('')
   const [formIsRecurring, setFormIsRecurring] = useState(false)
   const [formRecurrencePattern, setFormRecurrencePattern] = useState<RecurrencePattern>('daily')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -21,6 +23,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const { enabled: notificationsEnabled, supported: notificationsSupported, requestPermission } = useNotifications()
 
   // Fetch todos on mount
   useEffect(() => {
@@ -76,6 +79,10 @@ export default function Home() {
       setError('Due date is required for recurring todos')
       return
     }
+    if (formReminderMinutes !== '' && !formDueDate) {
+      setError('Due date is required when reminder is set')
+      return
+    }
 
     setIsSubmitting(true)
     try {
@@ -87,6 +94,7 @@ export default function Home() {
           priority: formPriority,
           dueDate: formDueDate || undefined,
           recurrencePattern: formIsRecurring ? formRecurrencePattern : undefined,
+          reminderMinutes: formReminderMinutes === '' ? undefined : formReminderMinutes,
         }),
       })
 
@@ -96,6 +104,7 @@ export default function Home() {
       setFormTitle('')
       setFormPriority('medium')
       setFormDueDate('')
+      setFormReminderMinutes('')
       setFormIsRecurring(false)
       setFormRecurrencePattern('daily')
       setError(null)
@@ -173,6 +182,27 @@ export default function Home() {
     return new Date(todo.dueDate) < getSingaporeNow()
   }
 
+  const getReminderLabel = (minutes: number | null) => {
+    const map: Record<number, string> = {
+      15: '15m',
+      30: '30m',
+      60: '1h',
+      120: '2h',
+      1440: '1d',
+      2880: '2d',
+      10080: '1w',
+    }
+    if (minutes === null) return ''
+    return map[minutes] || `${minutes}m`
+  }
+
+  const handleEnableNotifications = async () => {
+    const granted = await requestPermission()
+    if (!granted) {
+      setError('Notifications were not enabled. Please allow browser notification permission.')
+    }
+  }
+
   // Filter todos based on search and priority
   const filteredTodos = todos.filter((todo) => {
     const matchesSearch = todo.title.toLowerCase().includes(searchQuery.toLowerCase())
@@ -201,8 +231,16 @@ export default function Home() {
             <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
               🎁 Templates
             </button>
-            <button className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors">
-              🔔
+            <button
+              onClick={handleEnableNotifications}
+              disabled={!notificationsSupported || notificationsEnabled}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                notificationsEnabled
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-orange-500 hover:bg-orange-600 text-white'
+              } ${!notificationsSupported ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {notificationsEnabled ? 'Notifications On' : 'Enable Notifications'}
             </button>
             <button
               onClick={handleLogout}
@@ -244,8 +282,8 @@ export default function Home() {
               />
             </div>
 
-            {/* Priority, Due Date, Recurrence, and Add */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* Priority, Due Date, Reminder, Recurrence, and Add */}
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div>
                 <select
                   value={formPriority}
@@ -267,6 +305,27 @@ export default function Home() {
                   className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600/50 rounded-lg text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   disabled={isSubmitting}
                 />
+              </div>
+
+              <div>
+                <select
+                  value={formReminderMinutes}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setFormReminderMinutes(value === '' ? '' : Number(value))
+                  }}
+                  disabled={!formDueDate || isSubmitting}
+                  className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white disabled:text-slate-500 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                >
+                  <option value="">No reminder</option>
+                  <option value="15">15m before</option>
+                  <option value="30">30m before</option>
+                  <option value="60">1h before</option>
+                  <option value="120">2h before</option>
+                  <option value="1440">1d before</option>
+                  <option value="2880">2d before</option>
+                  <option value="10080">1w before</option>
+                </select>
               </div>
 
               <div className="flex items-center gap-2 px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg">
@@ -397,6 +456,12 @@ export default function Home() {
                     </div>
                   )}
 
+                  {todo.reminderMinutes !== null && (
+                    <div className="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap bg-orange-500/20 text-orange-300 border border-orange-500/30">
+                      🔔 {getReminderLabel(todo.reminderMinutes)}
+                    </div>
+                  )}
+
                   <button
                     onClick={() => setDeleteConfirm(todo.id)}
                     className="text-slate-400 hover:text-red-500 transition-colors"
@@ -433,6 +498,11 @@ export default function Home() {
                     {todo.recurrencePattern && (
                       <p className="text-xs mt-1 text-purple-300">
                         🔄 {todo.recurrencePattern}
+                      </p>
+                    )}
+                    {todo.reminderMinutes !== null && (
+                      <p className="text-xs mt-1 text-orange-300">
+                        🔔 {getReminderLabel(todo.reminderMinutes)}
                       </p>
                     )}
                   </div>

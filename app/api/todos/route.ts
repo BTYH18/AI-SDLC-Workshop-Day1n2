@@ -46,6 +46,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json() as CreateTodoInput
     const validPatterns = new Set(['daily', 'weekly', 'monthly', 'yearly'])
+    const validReminderMinutes = new Set([15, 30, 60, 120, 1440, 2880, 10080])
 
     // Validation
     if (!body.title || body.title.trim() === '') {
@@ -85,11 +86,27 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    if (body.reminderMinutes !== undefined && body.reminderMinutes !== null) {
+      if (!validReminderMinutes.has(body.reminderMinutes)) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid reminder timing' } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+      if (!body.dueDate) {
+        return NextResponse.json(
+          { success: false, error: 'Due date is required when reminder is set' } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+    }
+
     const todo = await todoDB.create(session.userId, {
       title: body.title.trim(),
       priority: body.priority,
       dueDate: body.dueDate,
       recurrencePattern: body.recurrencePattern,
+      reminderMinutes: body.reminderMinutes,
     })
 
     return NextResponse.json(
