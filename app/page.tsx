@@ -1,10 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Todo, Priority } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 
 export default function Home() {
+  const router = useRouter()
   const [todos, setTodos] = useState<Todo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -16,11 +18,25 @@ export default function Home() {
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
 
   // Fetch todos on mount
   useEffect(() => {
-    fetchTodos()
+    checkSessionAndLoad()
   }, [])
+
+  const checkSessionAndLoad = async () => {
+    try {
+      const authRes = await fetch('/api/auth/me', { method: 'GET' })
+      if (!authRes.ok) {
+        router.replace('/login')
+        return
+      }
+      await fetchTodos()
+    } catch {
+      router.replace('/login')
+    }
+  }
 
   const fetchTodos = async () => {
     try {
@@ -34,6 +50,17 @@ export default function Home() {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      setIsLoggingOut(true)
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+      })
+    } finally {
+      router.replace('/login')
     }
   }
 
@@ -168,8 +195,12 @@ export default function Home() {
             <button className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors">
               🔔
             </button>
-            <button className="bg-slate-600 hover:bg-slate-500 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-              Logout
+            <button
+              onClick={handleLogout}
+              disabled={isLoggingOut}
+              className="bg-slate-600 hover:bg-slate-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              {isLoggingOut ? 'Logging out...' : 'Logout'}
             </button>
           </div>
         </div>

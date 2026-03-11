@@ -16,7 +16,10 @@
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sql.js": "^1.10.2"
+    "sql.js": "^1.10.2",
+    "jsonwebtoken": "^9.0.0",
+    "@simplewebauthn/server": "^7.3.1",
+    "@simplewebauthn/browser": "^7.3.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",

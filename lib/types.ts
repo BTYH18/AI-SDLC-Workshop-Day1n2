@@ -29,3 +29,21 @@ export interface ApiResponse<T> {
   data?: T
   error?: string
 }
+
+// Authentication models
+export interface User {
+  id: number
+  username: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Authenticator {
+  id: number
+  userId: number
+  credentialId: string
+  publicKey: string
+  counter: number
+  createdAt: string
+  updatedAt: string
+}

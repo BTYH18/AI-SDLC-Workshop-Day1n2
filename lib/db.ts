@@ -1,7 +1,14 @@
 import initSqlJs from 'sql.js'
 import path from 'path'
 import fs from 'fs'
-import { Todo, CreateTodoInput, UpdateTodoInput, Priority } from './types'
+import {
+  Todo,
+  CreateTodoInput,
+  UpdateTodoInput,
+  Priority,
+  User,
+  Authenticator
+} from './types'
 
 const dbPath = path.join(process.cwd(), 'todos.db')
 let sqlDb: any = null
@@ -43,6 +50,28 @@ export async function initializeDb() {
     `)
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_created_at ON todos(created_at)')
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_due_date ON todos(due_date)')
+
+    // auth tables
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS authenticators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        credential_id TEXT UNIQUE NOT NULL,
+        public_key TEXT NOT NULL,
+        counter INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `)
 
     saveDb()
   })()
@@ -191,3 +220,107 @@ export const todoDB = {
     return true
   },
 }
+
+// user/authenticator operations
+export const userDB = {
+  create: async (username: string): Promise<User> => {
+    const db = await getDb()
+    const now = new Date().toISOString()
+    db.run(
+      `INSERT INTO users (username, created_at, updated_at) VALUES (?, ?, ?)`,
+      [username, now, now]
+    )
+    const result = db.exec('SELECT last_insert_rowid() as id')
+    const id = result[0]?.values[0]?.[0] as number
+    saveDb()
+    return { id, username, createdAt: now, updatedAt: now }
+  },
+
+  findByUsername: async (username: string): Promise<User | null> => {
+    const db = await getDb()
+    const res = db.exec(
+      `SELECT id, username, created_at as createdAt, updated_at as updatedAt FROM users WHERE username = ?`,
+      [username]
+    )
+    if (!res[0] || !res[0].values[0]) return null
+    const row = res[0].values[0]
+    const cols = res[0].columns
+    const obj: any = {}
+    cols.forEach((col: string, idx: number) => {
+      obj[col] = row[idx]
+    })
+    return obj as User
+  },
+
+  findById: async (id: number): Promise<User | null> => {
+    const db = await getDb()
+    const res = db.exec(
+      `SELECT id, username, created_at as createdAt, updated_at as updatedAt FROM users WHERE id = ?`,
+      [id]
+    )
+    if (!res[0] || !res[0].values[0]) return null
+    const row = res[0].values[0]
+    const cols = res[0].columns
+    const obj: any = {}
+    cols.forEach((col: string, idx: number) => {
+      obj[col] = row[idx]
+    })
+    return obj as User
+  },
+
+  addAuthenticator: async (
+    userId: number,
+    credentialId: string,
+    publicKey: string,
+    counter: number
+  ): Promise<Authenticator> => {
+    const db = await getDb()
+    const now = new Date().toISOString()
+    db.run(
+      `INSERT INTO authenticators (user_id, credential_id, public_key, counter, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, credentialId, publicKey, counter, now, now]
+    )
+    const result = db.exec('SELECT last_insert_rowid() as id')
+    const id = result[0]?.values[0]?.[0] as number
+    saveDb()
+    return {
+      id,
+      userId,
+      credentialId,
+      publicKey,
+      counter,
+      createdAt: now,
+      updatedAt: now,
+    }
+  },
+
+  getAuthenticatorsByUserId: async (userId: number): Promise<Authenticator[]> => {
+    const db = await getDb()
+    const res = db.exec(
+      `SELECT id, user_id as userId, credential_id as credentialId, public_key as publicKey, counter, created_at as createdAt, updated_at as updatedAt
+       FROM authenticators WHERE user_id = ?`,
+      [userId]
+    )
+    if (!res[0]) return []
+    const cols = res[0].columns
+    return res[0].values.map((row: any[]) => {
+      const obj: any = {}
+      cols.forEach((col: string, idx: number) => {
+        obj[col] = row[idx]
+      })
+      return obj as Authenticator
+    })
+  },
+
+  updateCounter: async (id: number, counter: number): Promise<void> => {
+    const db = await getDb()
+    const now = new Date().toISOString()
+    db.run(
+      `UPDATE authenticators SET counter = ?, updated_at = ? WHERE id = ?`,
+      [counter, now, id]
+    )
+    saveDb()
+  },
+}
+
