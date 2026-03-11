@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Todo, Priority } from '@/lib/types'
+import { Todo, Priority, Template } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 
 export default function Home() {
@@ -19,6 +19,12 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
+  const [templateCategory, setTemplateCategory] = useState('')
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false)
+  const [isUsingTemplate, setIsUsingTemplate] = useState(false)
 
   // Fetch todos on mount
   useEffect(() => {
@@ -32,9 +38,20 @@ export default function Home() {
         router.replace('/login')
         return
       }
-      await fetchTodos()
+      await Promise.all([fetchTodos(), fetchTemplates()])
     } catch {
       router.replace('/login')
+    }
+  }
+
+  const fetchTemplates = async () => {
+    try {
+      const res = await fetch('/api/templates')
+      if (!res.ok) throw new Error('Failed to fetch templates')
+      const data = await res.json()
+      setTemplates(data.data || [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
     }
   }
 
@@ -110,6 +127,151 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || 'Failed to update todo')
 
       fetchTodos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const toDateTimeLocalValue = (date: Date) => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day}T${hours}:${minutes}`
+  }
+
+  const calculateDueOffsetDays = () => {
+    if (!formDueDate) return null
+    const dueDate = new Date(formDueDate)
+    if (isNaN(dueDate.getTime())) return null
+    const diffMs = dueDate.getTime() - getSingaporeNow().getTime()
+    return Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)))
+  }
+
+  const handleSaveTemplate = async () => {
+    if (!formTitle.trim()) {
+      setError('Enter a todo title before saving a template')
+      return
+    }
+
+    setIsSavingTemplate(true)
+    try {
+      const res = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formTitle.trim(),
+          category: templateCategory.trim() || null,
+          priority: formPriority,
+          dueOffsetDays: calculateDueOffsetDays(),
+          subtasksJson: '[]',
+          tagsJson: '[]',
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to save template')
+
+      setTemplateCategory('')
+      setError(null)
+      await fetchTemplates()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsSavingTemplate(false)
+    }
+  }
+
+  const selectedTemplate = selectedTemplateId ? templates.find((t) => t.id === selectedTemplateId) || null : null
+
+  const handleLoadTemplateToForm = () => {
+    if (!selectedTemplate) {
+      setError('Select a template first')
+      return
+    }
+
+    setFormTitle(selectedTemplate.name)
+    setFormPriority(selectedTemplate.priority)
+
+    if (selectedTemplate.dueOffsetDays === null) {
+      setFormDueDate('')
+    } else {
+      const date = new Date(getSingaporeNow().getTime() + selectedTemplate.dueOffsetDays * 24 * 60 * 60 * 1000)
+      setFormDueDate(toDateTimeLocalValue(date))
+    }
+    setError(null)
+  }
+
+  const handleUseTemplate = async () => {
+    if (!selectedTemplateId) {
+      setError('Select a template first')
+      return
+    }
+
+    setIsUsingTemplate(true)
+    try {
+      const res = await fetch(`/api/templates/${selectedTemplateId}/use`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to use template')
+
+      setError(null)
+      await fetchTodos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsUsingTemplate(false)
+    }
+  }
+
+  const handleDeleteTemplate = async () => {
+    if (!selectedTemplateId) {
+      setError('Select a template first')
+      return
+    }
+
+    if (!window.confirm('Delete selected template? This cannot be undone.')) {
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/templates/${selectedTemplateId}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to delete template')
+
+      setSelectedTemplateId(null)
+      setError(null)
+      await fetchTemplates()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const handleRenameTemplate = async () => {
+    if (!selectedTemplateId || !selectedTemplate) {
+      setError('Select a template first')
+      return
+    }
+
+    const newName = window.prompt('New template name', selectedTemplate.name)
+    if (newName === null) return
+
+    if (!newName.trim()) {
+      setError('Template name cannot be empty')
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/templates/${selectedTemplateId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to rename template')
+
+      setError(null)
+      await fetchTemplates()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     }
@@ -270,9 +432,91 @@ export default function Home() {
             </div>
 
             {/* Advanced Options */}
-            <button type="button" className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors">
-              ▶ Show Advanced Options
+            <button
+              type="button"
+              onClick={() => setShowAdvancedOptions((prev) => !prev)}
+              className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
+            >
+              {showAdvancedOptions ? '▼ Hide Advanced Options' : '▶ Show Advanced Options'}
             </button>
+
+            {showAdvancedOptions && (
+              <div className="bg-slate-700/30 border border-slate-600/50 rounded-lg p-4 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Template category (optional)"
+                    value={templateCategory}
+                    onChange={(e) => setTemplateCategory(e.target.value)}
+                    className="px-4 py-2 bg-slate-800/60 border border-slate-600/50 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={isSavingTemplate}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveTemplate}
+                    disabled={isSavingTemplate}
+                    className="bg-blue-700 hover:bg-blue-800 disabled:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                  >
+                    {isSavingTemplate ? 'Saving...' : 'Save Template'}
+                  </button>
+                  <div className="text-xs text-slate-400 flex items-center">
+                    Saves current title, priority, and due date offset.
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <select
+                    value={selectedTemplateId ?? ''}
+                    onChange={(e) => setSelectedTemplateId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                    className="px-4 py-2 bg-slate-800/60 border border-slate-600/50 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select template to load/use</option>
+                    {templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name} ({template.priority})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleLoadTemplateToForm}
+                    className="bg-teal-600 hover:bg-teal-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                  >
+                    Load Into Form
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleUseTemplate}
+                    disabled={isUsingTemplate}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                  >
+                    {isUsingTemplate ? 'Creating...' : 'Use Template Now'}
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRenameTemplate}
+                    className="bg-slate-600 hover:bg-slate-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+                  >
+                    Rename Selected
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteTemplate}
+                    className="bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+                  >
+                    Delete Selected
+                  </button>
+                  {selectedTemplate && (
+                    <span className="text-xs text-slate-300 flex items-center">
+                      Offset: {selectedTemplate.dueOffsetDays === null ? 'No due date' : `${selectedTemplate.dueOffsetDays} day(s)`}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </form>
         </div>
 

@@ -7,8 +7,12 @@ import {
   UpdateTodoInput,
   Priority,
   User,
-  Authenticator
+  Authenticator,
+  Template,
+  CreateTemplateInput,
+  UpdateTemplateInput
 } from './types'
+import { getSingaporeNow } from './timezone'
 
 const dbPath = path.join(process.cwd(), 'todos.db')
 let sqlDb: any = null
@@ -80,6 +84,23 @@ export async function initializeDb() {
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `)
+
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        category TEXT,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        subtasks_json TEXT NOT NULL DEFAULT '[]',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        due_offset_days INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `)
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_templates_user_id ON templates(user_id)')
 
     // backfill legacy todos to first user so existing data remains visible
     const firstUserRes = sqlDb.exec('SELECT id FROM users ORDER BY id LIMIT 1')
@@ -234,6 +255,145 @@ export const todoDB = {
     const todo = await todoDB.getById(userId, id)
     if (!todo) return false
     db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, userId])
+    saveDb()
+    return true
+  },
+}
+
+export const templateDB = {
+  create: async (userId: number, input: CreateTemplateInput): Promise<Template> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+    const priority = input.priority || 'medium'
+    const category = input.category || null
+    const subtasksJson = input.subtasksJson || '[]'
+    const tagsJson = input.tagsJson || '[]'
+    const dueOffsetDays = input.dueOffsetDays ?? null
+
+    db.run(
+      `INSERT INTO templates (user_id, name, category, priority, subtasks_json, tags_json, due_offset_days, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, input.name, category, priority, subtasksJson, tagsJson, dueOffsetDays, now, now]
+    )
+
+    const result = db.exec('SELECT last_insert_rowid() as id')
+    const id = result[0]?.values[0]?.[0] as number
+
+    saveDb()
+
+    return {
+      id,
+      userId,
+      name: input.name,
+      category,
+      priority: priority as Priority,
+      subtasksJson,
+      tagsJson,
+      dueOffsetDays,
+      createdAt: now,
+      updatedAt: now,
+    }
+  },
+
+  getAll: async (userId: number): Promise<Template[]> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, user_id as userId, name, category, priority, subtasks_json as subtasksJson, tags_json as tagsJson,
+              due_offset_days as dueOffsetDays, created_at as createdAt, updated_at as updatedAt
+       FROM templates
+       WHERE user_id = ?
+       ORDER BY created_at DESC`,
+      [userId]
+    )
+
+    if (!result[0]) return []
+
+    const columnNames = result[0].columns
+    return result[0].values.map((row: any[]) => {
+      const obj: any = {}
+      columnNames.forEach((col: string, idx: number) => {
+        obj[col] = row[idx]
+      })
+      return obj as Template
+    })
+  },
+
+  getById: async (userId: number, id: number): Promise<Template | null> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, user_id as userId, name, category, priority, subtasks_json as subtasksJson, tags_json as tagsJson,
+              due_offset_days as dueOffsetDays, created_at as createdAt, updated_at as updatedAt
+       FROM templates
+       WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    )
+
+    if (!result[0] || !result[0].values[0]) return null
+
+    const columnNames = result[0].columns
+    const row = result[0].values[0]
+    const obj: any = {}
+    columnNames.forEach((col: string, idx: number) => {
+      obj[col] = row[idx]
+    })
+
+    return obj as Template
+  },
+
+  update: async (userId: number, id: number, input: UpdateTemplateInput): Promise<Template | null> => {
+    const db = await getDb()
+    const template = await templateDB.getById(userId, id)
+    if (!template) return null
+
+    const now = getSingaporeNow().toISOString()
+    const updates: string[] = []
+    const values: any[] = []
+
+    if (input.name !== undefined) {
+      updates.push('name = ?')
+      values.push(input.name)
+    }
+    if (input.category !== undefined) {
+      updates.push('category = ?')
+      values.push(input.category)
+    }
+    if (input.priority !== undefined) {
+      updates.push('priority = ?')
+      values.push(input.priority)
+    }
+    if (input.subtasksJson !== undefined) {
+      updates.push('subtasks_json = ?')
+      values.push(input.subtasksJson)
+    }
+    if (input.tagsJson !== undefined) {
+      updates.push('tags_json = ?')
+      values.push(input.tagsJson)
+    }
+    if (input.dueOffsetDays !== undefined) {
+      updates.push('due_offset_days = ?')
+      values.push(input.dueOffsetDays)
+    }
+
+    if (updates.length === 0) return template
+
+    updates.push('updated_at = ?')
+    values.push(now)
+
+    db.run(
+      `UPDATE templates SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+      [...values, id, userId]
+    )
+
+    saveDb()
+
+    return templateDB.getById(userId, id)
+  },
+
+  delete: async (userId: number, id: number): Promise<boolean> => {
+    const db = await getDb()
+    const template = await templateDB.getById(userId, id)
+    if (!template) return false
+    db.run('DELETE FROM templates WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
   },
