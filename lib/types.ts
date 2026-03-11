@@ -1,11 +1,13 @@
 // Type definitions for the todo app
 export type Priority = 'low' | 'medium' | 'high'
+export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly'
 
 export interface Todo {
   id: number
   title: string
   priority: Priority
   dueDate: string | null
+  recurrencePattern: RecurrencePattern | null
   completed: boolean
   createdAt: string
   updatedAt: string
@@ -15,12 +17,14 @@ export interface CreateTodoInput {
   title: string
   priority?: Priority
   dueDate?: string
+  recurrencePattern?: RecurrencePattern
 }
 
 export interface UpdateTodoInput {
   title?: string
   priority?: Priority
   dueDate?: string | null
+  recurrencePattern?: RecurrencePattern | null
   completed?: boolean
 }
 

@@ -59,6 +59,13 @@ export async function initializeDb() {
     }
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id)')
 
+    // migration: add recurrence pattern
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN recurrence_pattern TEXT')
+    } catch {
+      // Column already exists
+    }
+
     // auth tables
     sqlDb.run(`
       CREATE TABLE IF NOT EXISTS users (
@@ -118,9 +125,9 @@ export const todoDB = {
     const priority = input.priority || 'medium'
 
     db.run(
-      `INSERT INTO todos (user_id, title, priority, due_date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [userId, input.title, priority, input.dueDate || null, now, now]
+      `INSERT INTO todos (user_id, title, priority, due_date, recurrence_pattern, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [userId, input.title, priority, input.dueDate || null, input.recurrencePattern || null, now, now]
     )
 
     // Get the last inserted ID
@@ -134,6 +141,7 @@ export const todoDB = {
       title: input.title,
       priority: priority as Priority,
       dueDate: input.dueDate || null,
+      recurrencePattern: input.recurrencePattern || null,
       completed: false,
       createdAt: now,
       updatedAt: now,
@@ -143,7 +151,7 @@ export const todoDB = {
   getAll: async (userId: number): Promise<Todo[]> => {
     const db = await getDb()
     const result = db.exec(`
-      SELECT id, title, priority, due_date as dueDate, completed, created_at as createdAt, updated_at as updatedAt
+      SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, completed, created_at as createdAt, updated_at as updatedAt
       FROM todos
       WHERE user_id = ?
       ORDER BY priority = 'high' DESC, priority = 'medium' DESC, due_date ASC, created_at DESC
@@ -152,9 +160,9 @@ export const todoDB = {
     if (!result[0]) return []
 
     const columnNames = result[0].columns
-    return result[0].values.map((row) => {
+    return result[0].values.map((row: any[]) => {
       const obj = {} as any
-      columnNames.forEach((col, idx) => {
+      columnNames.forEach((col: string, idx: number) => {
         obj[col] = row[idx]
       })
       return {
@@ -167,7 +175,7 @@ export const todoDB = {
   getById: async (userId: number, id: number): Promise<Todo | null> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, title, priority, due_date as dueDate, completed, created_at as createdAt, updated_at as updatedAt
+      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, completed, created_at as createdAt, updated_at as updatedAt
        FROM todos WHERE id = ? AND user_id = ?`,
       [id, userId]
     )
@@ -177,7 +185,7 @@ export const todoDB = {
     const columnNames = result[0].columns
     const row = result[0].values[0]
     const obj = {} as any
-    columnNames.forEach((col, idx) => {
+    columnNames.forEach((col: string, idx: number) => {
       obj[col] = row[idx]
     })
 
@@ -207,6 +215,10 @@ export const todoDB = {
     if (input.dueDate !== undefined) {
       updates.push('due_date = ?')
       values.push(input.dueDate)
+    }
+    if (input.recurrencePattern !== undefined) {
+      updates.push('recurrence_pattern = ?')
+      values.push(input.recurrencePattern)
     }
     if (input.completed !== undefined) {
       updates.push('completed = ?')

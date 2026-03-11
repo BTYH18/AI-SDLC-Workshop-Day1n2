@@ -45,6 +45,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json() as CreateTodoInput
+    const validPatterns = new Set(['daily', 'weekly', 'monthly', 'yearly'])
 
     // Validation
     if (!body.title || body.title.trim() === '') {
@@ -70,10 +71,25 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (body.recurrencePattern && !validPatterns.has(body.recurrencePattern)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid recurrence pattern' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
+    if (body.recurrencePattern && !body.dueDate) {
+      return NextResponse.json(
+        { success: false, error: 'Due date is required for recurring todos' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
     const todo = await todoDB.create(session.userId, {
       title: body.title.trim(),
       priority: body.priority,
       dueDate: body.dueDate,
+      recurrencePattern: body.recurrencePattern,
     })
 
     return NextResponse.json(

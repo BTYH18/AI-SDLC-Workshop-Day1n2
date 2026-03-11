@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { todoDB } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { UpdateTodoInput, ApiResponse, Todo } from '@/lib/types'
-import { isFutureDate } from '@/lib/timezone'
+import { calculateNextDueDate, isFutureDate } from '@/lib/timezone'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -75,6 +75,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json() as UpdateTodoInput
+    const currentTodo = await todoDB.getById(session.userId, todoId)
+    if (!currentTodo) {
+      return NextResponse.json(
+        { success: false, error: 'Todo not found' } as ApiResponse<null>,
+        { status: 404 }
+      )
+    }
+    const validPatterns = new Set(['daily', 'weekly', 'monthly', 'yearly'])
 
     // Validation
     if (body.title !== undefined) {
@@ -102,10 +110,31 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    if (body.recurrencePattern !== undefined && body.recurrencePattern !== null) {
+      if (!validPatterns.has(body.recurrencePattern)) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid recurrence pattern' } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+    }
+
+    const nextRecurrencePattern =
+      body.recurrencePattern !== undefined ? body.recurrencePattern : currentTodo.recurrencePattern
+    const nextDueDate = body.dueDate !== undefined ? body.dueDate : currentTodo.dueDate
+
+    if (nextRecurrencePattern && !nextDueDate) {
+      return NextResponse.json(
+        { success: false, error: 'Due date is required for recurring todos' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
     const todo = await todoDB.update(session.userId, todoId, {
       title: body.title?.trim(),
       priority: body.priority,
       dueDate: body.dueDate,
+      recurrencePattern: body.recurrencePattern,
       completed: body.completed,
     })
 
@@ -114,6 +143,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         { success: false, error: 'Todo not found' } as ApiResponse<null>,
         { status: 404 }
       )
+    }
+
+    const becameCompleted = currentTodo.completed === false && body.completed === true
+    if (becameCompleted && todo.recurrencePattern && todo.dueDate) {
+      const nextDueDateIso = calculateNextDueDate(todo.dueDate, todo.recurrencePattern)
+      await todoDB.create(session.userId, {
+        title: todo.title,
+        priority: todo.priority,
+        dueDate: nextDueDateIso,
+        recurrencePattern: todo.recurrencePattern,
+      })
     }
 
     return NextResponse.json(

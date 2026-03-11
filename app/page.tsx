@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Todo, Priority } from '@/lib/types'
+import { Todo, Priority, RecurrencePattern } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 
 export default function Home() {
@@ -13,6 +13,8 @@ export default function Home() {
   const [formTitle, setFormTitle] = useState('')
   const [formPriority, setFormPriority] = useState<Priority>('medium')
   const [formDueDate, setFormDueDate] = useState('')
+  const [formIsRecurring, setFormIsRecurring] = useState(false)
+  const [formRecurrencePattern, setFormRecurrencePattern] = useState<RecurrencePattern>('daily')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
@@ -70,6 +72,10 @@ export default function Home() {
       setError('Please enter a title')
       return
     }
+    if (formIsRecurring && !formDueDate) {
+      setError('Due date is required for recurring todos')
+      return
+    }
 
     setIsSubmitting(true)
     try {
@@ -80,6 +86,7 @@ export default function Home() {
           title: formTitle.trim(),
           priority: formPriority,
           dueDate: formDueDate || undefined,
+          recurrencePattern: formIsRecurring ? formRecurrencePattern : undefined,
         }),
       })
 
@@ -89,6 +96,8 @@ export default function Home() {
       setFormTitle('')
       setFormPriority('medium')
       setFormDueDate('')
+      setFormIsRecurring(false)
+      setFormRecurrencePattern('daily')
       setError(null)
       fetchTodos()
     } catch (err) {
@@ -235,8 +244,8 @@ export default function Home() {
               />
             </div>
 
-            {/* Priority and Due Date Row */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Priority, Due Date, Recurrence, and Add */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <select
                   value={formPriority}
@@ -258,6 +267,34 @@ export default function Home() {
                   className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600/50 rounded-lg text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   disabled={isSubmitting}
                 />
+              </div>
+
+              <div className="flex items-center gap-2 px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg">
+                <input
+                  id="recurring-toggle"
+                  type="checkbox"
+                  checked={formIsRecurring}
+                  onChange={(e) => setFormIsRecurring(e.target.checked)}
+                  className="w-4 h-4 text-blue-500 rounded"
+                  disabled={isSubmitting}
+                />
+                <label htmlFor="recurring-toggle" className="text-sm text-white">
+                  Repeat
+                </label>
+              </div>
+
+              <div>
+                <select
+                  value={formRecurrencePattern}
+                  onChange={(e) => setFormRecurrencePattern(e.target.value as RecurrencePattern)}
+                  disabled={!formIsRecurring || isSubmitting}
+                  className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white disabled:text-slate-500 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
               </div>
 
               <button
@@ -354,6 +391,12 @@ export default function Home() {
                     {todo.priority.toUpperCase()}
                   </div>
 
+                  {todo.recurrencePattern && (
+                    <div className="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      🔄 {todo.recurrencePattern}
+                    </div>
+                  )}
+
                   <button
                     onClick={() => setDeleteConfirm(todo.id)}
                     className="text-slate-400 hover:text-red-500 transition-colors"
@@ -387,6 +430,11 @@ export default function Home() {
                     <p className="font-medium line-through text-slate-500">
                       {todo.title}
                     </p>
+                    {todo.recurrencePattern && (
+                      <p className="text-xs mt-1 text-purple-300">
+                        🔄 {todo.recurrencePattern}
+                      </p>
+                    )}
                   </div>
 
                   <button
