@@ -12,6 +12,7 @@ const POLL_INTERVAL_MS = 30_000
 export function useNotifications() {
   const [permission, setPermission] = useState<NotificationPermission>('default')
   const [supported, setSupported] = useState(false)
+  const [pendingReminders, setPendingReminders] = useState<NotificationTodo[]>([])
 
   useEffect(() => {
     const canNotify = typeof window !== 'undefined' && 'Notification' in window
@@ -38,9 +39,20 @@ export function useNotifications() {
     })
   }, [enabled])
 
-  const checkNotifications = useCallback(async () => {
-    if (!enabled) return
+  const enqueueInAppReminder = useCallback((todo: NotificationTodo) => {
+    setPendingReminders((current) => {
+      if (current.some((item) => item.id === todo.id)) {
+        return current
+      }
+      return [...current, todo]
+    })
+  }, [])
 
+  const dismissReminder = useCallback((id: number) => {
+    setPendingReminders((current) => current.filter((todo) => todo.id !== id))
+  }, [])
+
+  const checkNotifications = useCallback(async () => {
     const res = await fetch('/api/notifications/check')
     if (!res.ok) return
 
@@ -48,13 +60,12 @@ export function useNotifications() {
     const todos = (body?.data || []) as NotificationTodo[]
 
     todos.forEach((todo) => {
+      enqueueInAppReminder(todo)
       showNotification(todo)
     })
-  }, [enabled, showNotification])
+  }, [enqueueInAppReminder, showNotification])
 
   useEffect(() => {
-    if (!enabled) return
-
     void checkNotifications()
     const timer = window.setInterval(() => {
       void checkNotifications()
@@ -63,12 +74,14 @@ export function useNotifications() {
     return () => {
       window.clearInterval(timer)
     }
-  }, [enabled, checkNotifications])
+  }, [checkNotifications])
 
   return {
     enabled,
     supported,
     permission,
     requestPermission,
+    pendingReminders,
+    dismissReminder,
   }
 }

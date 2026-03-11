@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { todoDB } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { UpdateTodoInput, ApiResponse, Todo } from '@/lib/types'
-import { calculateNextDueDate, isFutureDate } from '@/lib/timezone'
+import { calculateNextDueDate, getSingaporeNow, isFutureDate } from '@/lib/timezone'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -147,6 +147,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         { success: false, error: 'Due date is required when reminder is set' } as ApiResponse<null>,
         { status: 400 }
       )
+    }
+
+    if (nextReminderMinutes !== null && nextDueDate) {
+      const effectiveDueDate = new Date(nextDueDate)
+      const minutesUntilDue = Math.floor((effectiveDueDate.getTime() - getSingaporeNow().getTime()) / 60000)
+      if (nextReminderMinutes > minutesUntilDue) {
+        return NextResponse.json(
+          { success: false, error: 'Reminder must be earlier than due date' } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
     }
 
     const todo = await todoDB.update(session.userId, todoId, {

@@ -6,6 +6,16 @@ import { Todo, Priority, RecurrencePattern } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 import { useNotifications } from '@/lib/hooks/useNotifications'
 
+const REMINDER_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 15, label: '15m before' },
+  { value: 30, label: '30m before' },
+  { value: 60, label: '1h before' },
+  { value: 120, label: '2h before' },
+  { value: 1440, label: '1d before' },
+  { value: 2880, label: '2d before' },
+  { value: 10080, label: '1w before' },
+]
+
 export default function Home() {
   const router = useRouter()
   const [todos, setTodos] = useState<Todo[]>([])
@@ -23,12 +33,29 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
-  const { enabled: notificationsEnabled, supported: notificationsSupported, requestPermission } = useNotifications()
+  const {
+    enabled: notificationsEnabled,
+    supported: notificationsSupported,
+    requestPermission,
+    pendingReminders,
+    dismissReminder,
+  } = useNotifications()
+
+  const minutesUntilDue = formDueDate
+    ? Math.floor((new Date(formDueDate).getTime() - getSingaporeNow().getTime()) / 60000)
+    : null
 
   // Fetch todos on mount
   useEffect(() => {
     checkSessionAndLoad()
   }, [])
+
+  useEffect(() => {
+    if (formReminderMinutes === '' || minutesUntilDue === null) return
+    if (minutesUntilDue < formReminderMinutes) {
+      setFormReminderMinutes('')
+    }
+  }, [formReminderMinutes, minutesUntilDue])
 
   const checkSessionAndLoad = async () => {
     try {
@@ -81,6 +108,10 @@ export default function Home() {
     }
     if (formReminderMinutes !== '' && !formDueDate) {
       setError('Due date is required when reminder is set')
+      return
+    }
+    if (formReminderMinutes !== '' && minutesUntilDue !== null && formReminderMinutes > minutesUntilDue) {
+      setError('Reminder must be earlier than the selected due time')
       return
     }
 
@@ -318,13 +349,15 @@ export default function Home() {
                   className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white disabled:text-slate-500 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                 >
                   <option value="">No reminder</option>
-                  <option value="15">15m before</option>
-                  <option value="30">30m before</option>
-                  <option value="60">1h before</option>
-                  <option value="120">2h before</option>
-                  <option value="1440">1d before</option>
-                  <option value="2880">2d before</option>
-                  <option value="10080">1w before</option>
+                  {REMINDER_OPTIONS.map((option) => {
+                    const optionDisabled = minutesUntilDue !== null && option.value > minutesUntilDue
+                    return (
+                      <option key={option.value} value={option.value} disabled={optionDisabled}>
+                        {option.label}
+                        {optionDisabled ? ' (too late)' : ''}
+                      </option>
+                    )
+                  })}
                 </select>
               </div>
 
@@ -547,6 +580,24 @@ export default function Home() {
                 className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition"
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-app Reminder Popup */}
+      {pendingReminders.length > 0 && (
+        <div className="fixed bottom-6 right-6 z-50 w-full max-w-sm">
+          <div className="bg-slate-800 border border-orange-400/50 rounded-xl shadow-2xl p-4">
+            <p className="text-orange-300 font-semibold mb-1">Reminder</p>
+            <p className="text-white text-sm mb-4">{pendingReminders[0].title}</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => dismissReminder(pendingReminders[0].id)}
+                className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-medium py-2 px-3 rounded-lg transition"
+              >
+                Dismiss
               </button>
             </div>
           </div>

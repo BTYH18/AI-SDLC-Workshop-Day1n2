@@ -9,6 +9,7 @@ import {
   User,
   Authenticator
 } from './types'
+import { getSingaporeNow } from './timezone'
 
 const dbPath = path.join(process.cwd(), 'todos.db')
 let sqlDb: any = null
@@ -294,24 +295,54 @@ export const todoDB = {
   getDueNotifications: async (userId: number, nowIso: string): Promise<Array<{ id: number; title: string }>> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, title
+      `SELECT id, title, due_date as dueDate, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent
        FROM todos
        WHERE user_id = ?
          AND completed = 0
          AND due_date IS NOT NULL
-         AND reminder_minutes IS NOT NULL
-         AND datetime(due_date) <= datetime(?, '+' || reminder_minutes || ' minutes')
-         AND (
-           last_notification_sent IS NULL
-           OR datetime(last_notification_sent) <= datetime(?, '-15 minutes')
-         )`,
-      [userId, nowIso, nowIso]
+         AND reminder_minutes IS NOT NULL`,
+      [userId]
     )
 
     if (!result[0]) return []
 
-    const values = result[0].values
-    return values.map((row: any[]) => ({ id: Number(row[0]), title: String(row[1]) }))
+    const nowDate = new Date(nowIso)
+    const nowMs = isNaN(nowDate.getTime()) ? getSingaporeNow().getTime() : nowDate.getTime()
+    const fifteenMinutesMs = 15 * 60 * 1000
+
+    const parseDueDate = (raw: string): Date => {
+      // datetime-local values have no timezone; treat them as Singapore local time.
+      const hasTimezone = /Z$|[+-]\d{2}:\d{2}$/.test(raw)
+      if (!hasTimezone && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) {
+        return new Date(`${raw}+08:00`)
+      }
+      return new Date(raw)
+    }
+
+    const rows = result[0].values
+    return rows
+      .map((row: any[]) => ({
+        id: Number(row[0]),
+        title: String(row[1]),
+        dueDate: String(row[2]),
+        reminderMinutes: Number(row[3]),
+        lastNotificationSent: row[4] ? String(row[4]) : null,
+      }))
+      .filter((todo) => {
+        const dueDate = parseDueDate(todo.dueDate)
+        const dueMs = dueDate.getTime()
+        if (isNaN(dueMs) || !Number.isFinite(todo.reminderMinutes)) return false
+
+        const triggerAtMs = dueMs - todo.reminderMinutes * 60 * 1000
+        if (nowMs < triggerAtMs) return false
+
+        if (!todo.lastNotificationSent) return true
+
+        const lastSentMs = new Date(todo.lastNotificationSent).getTime()
+        if (isNaN(lastSentMs)) return true
+        return nowMs - lastSentMs >= fifteenMinutesMs
+      })
+      .map((todo) => ({ id: todo.id, title: todo.title }))
   },
 
   markNotificationsSent: async (userId: number, todoIds: number[], sentAtIso: string): Promise<void> => {

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { todoDB } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CreateTodoInput, ApiResponse, Todo } from '@/lib/types'
-import { isFutureDate } from '@/lib/timezone'
+import { getSingaporeNow, isFutureDate } from '@/lib/timezone'
 
 /**
  * GET /api/todos - Retrieve all todos
@@ -69,6 +69,16 @@ export async function POST(request: NextRequest) {
           { success: false, error: 'Due date must be at least 1 minute in the future' } as ApiResponse<null>,
           { status: 400 }
         )
+      }
+
+      if (body.reminderMinutes !== undefined && body.reminderMinutes !== null) {
+        const minutesUntilDue = Math.floor((dueDate.getTime() - getSingaporeNow().getTime()) / 60000)
+        if (body.reminderMinutes > minutesUntilDue) {
+          return NextResponse.json(
+            { success: false, error: 'Reminder must be earlier than due date' } as ApiResponse<null>,
+            { status: 400 }
+          )
+        }
       }
     }
 
