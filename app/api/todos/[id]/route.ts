@@ -123,6 +123,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const nextRecurrencePattern =
       body.recurrencePattern !== undefined ? body.recurrencePattern : currentTodo.recurrencePattern
     const nextDueDate = body.dueDate !== undefined ? body.dueDate : currentTodo.dueDate
+    const nextCompleted = body.completed !== undefined ? body.completed : currentTodo.completed
 
     if (nextRecurrencePattern && !nextDueDate) {
       return NextResponse.json(
@@ -131,7 +132,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    if (body.reminderMinutes !== undefined && body.reminderMinutes !== null) {
+    if (!nextCompleted && body.reminderMinutes !== undefined && body.reminderMinutes !== null) {
       if (!validReminderMinutes.has(body.reminderMinutes)) {
         return NextResponse.json(
           { success: false, error: 'Invalid reminder timing' } as ApiResponse<null>,
@@ -141,7 +142,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     const nextReminderMinutes =
-      body.reminderMinutes !== undefined ? body.reminderMinutes : currentTodo.reminderMinutes
+      nextCompleted ? null : (body.reminderMinutes !== undefined ? body.reminderMinutes : currentTodo.reminderMinutes)
     if (nextReminderMinutes !== null && !nextDueDate) {
       return NextResponse.json(
         { success: false, error: 'Due date is required when reminder is set' } as ApiResponse<null>,
@@ -165,7 +166,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       priority: body.priority,
       dueDate: body.dueDate,
       recurrencePattern: body.recurrencePattern,
-      reminderMinutes: body.reminderMinutes,
+      reminderMinutes: nextCompleted ? null : body.reminderMinutes,
+      snoozedUntil: nextCompleted ? null : body.snoozedUntil,
       completed: body.completed,
     })
 
@@ -179,13 +181,27 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const becameCompleted = currentTodo.completed === false && body.completed === true
     if (becameCompleted && todo.recurrencePattern && todo.dueDate) {
       const nextDueDateIso = calculateNextDueDate(todo.dueDate, todo.recurrencePattern)
-      await todoDB.create(session.userId, {
-        title: todo.title,
-        priority: todo.priority,
-        dueDate: nextDueDateIso,
-        recurrencePattern: todo.recurrencePattern,
-        reminderMinutes: todo.reminderMinutes,
-      })
+      const hasActiveChild = await todoDB.hasActiveRecurringChild(
+        session.userId,
+        todoId,
+        todo.title,
+        nextDueDateIso,
+        todo.recurrencePattern
+      )
+
+      if (!hasActiveChild) {
+        await todoDB.create(session.userId, {
+          title: todo.title,
+          priority: todo.priority,
+          generatedFromTodoId: todoId,
+          dueDate: nextDueDateIso,
+          recurrencePattern: todo.recurrencePattern,
+          // Preserve the source todo's reminder for the next recurring instance,
+          // even though the completed todo itself is auto-cleared to "No reminder".
+          reminderMinutes: currentTodo.reminderMinutes,
+        })
+        await todoDB.update(session.userId, todoId, { nextInstanceCreated: true })
+      }
     }
 
     return NextResponse.json(
