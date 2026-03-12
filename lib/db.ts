@@ -12,8 +12,12 @@ import {
   Template,
   CreateTemplateInput,
   UpdateTemplateInput,
-  Holiday
+  Holiday,
+  Subtask,
+  CreateSubtaskInput,
+  UpdateSubtaskInput
 } from './types'
+import { buildSequentialAssignments, calculateSubtaskProgressFromCounts, reorderSubtaskIds } from './subtasks'
 import { getSingaporeNow } from './timezone'
 
 const dbPath = path.join(process.cwd(), 'todos.db')
@@ -99,6 +103,22 @@ export async function initializeDb() {
       // Column already exists
     }
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_todos_generated_from ON todos(generated_from_todo_id)')
+
+    // subtasks table
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS subtasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        todo_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        completed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(todo_id) REFERENCES todos(id) ON DELETE CASCADE
+      )
+    `)
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_subtasks_todo_id ON subtasks(todo_id)')
+    sqlDb.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_subtasks_todo_position ON subtasks(todo_id, position)')
 
     // auth tables
     sqlDb.run(`
@@ -457,6 +477,8 @@ export const todoDB = {
     const db = await getDb()
     const todo = await todoDB.getById(userId, id)
     if (!todo) return false
+    // Defensive delete keeps behavior correct even if legacy databases lack FK cascade.
+    db.run('DELETE FROM subtasks WHERE todo_id = ?', [id])
     db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
@@ -957,6 +979,211 @@ export const holidayDB = {
     const db = await getDb()
     db.run('DELETE FROM holidays')
     saveDb()
+  },
+}
+
+export const subtaskDB = {
+  listByTodoId: async (todoId: number): Promise<Subtask[]> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, todo_id as todoId, title, position, completed, created_at as createdAt, updated_at as updatedAt
+       FROM subtasks
+       WHERE todo_id = ?
+       ORDER BY position ASC`,
+      [todoId]
+    )
+
+    if (!result[0]) return []
+
+    const columnNames = result[0].columns
+    return result[0].values.map((row: any[]) => {
+      const obj = {} as any
+      columnNames.forEach((col: string, idx: number) => {
+        obj[col] = row[idx]
+      })
+      return {
+        ...obj,
+        completed: Boolean(obj.completed),
+      }
+    })
+  },
+
+  create: async (todoId: number, input: CreateSubtaskInput): Promise<Subtask> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+    let id = 0
+
+    let nextPosition = 0
+    db.run('BEGIN TRANSACTION')
+    try {
+      const maxPositionResult = db.exec(
+        'SELECT COALESCE(MAX(position), -1) as maxPos FROM subtasks WHERE todo_id = ?',
+        [todoId]
+      )
+      const maxPosition = Number(maxPositionResult[0]?.values?.[0]?.[0] ?? -1)
+      nextPosition = maxPosition + 1
+
+      db.run(
+        `INSERT INTO subtasks (todo_id, title, position, completed, created_at, updated_at)
+         VALUES (?, ?, ?, 0, ?, ?)`,
+        [todoId, input.title, nextPosition, now, now]
+      )
+      const result = db.exec('SELECT last_insert_rowid() as id')
+      id = result[0]?.values[0]?.[0] as number
+      db.run('COMMIT')
+    } catch (error) {
+      db.run('ROLLBACK')
+      throw error
+    }
+
+    saveDb()
+
+    return {
+      id,
+      todoId,
+      title: input.title,
+      position: nextPosition,
+      completed: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+  },
+
+  update: async (subtaskId: number, todoId: number, input: UpdateSubtaskInput): Promise<Subtask | null> => {
+    const db = await getDb()
+    const existing = await subtaskDB.getById(subtaskId, todoId)
+    if (!existing) return null
+
+    const now = getSingaporeNow().toISOString()
+    const updates: string[] = []
+    const values: any[] = []
+
+    if (input.title !== undefined) {
+      updates.push('title = ?')
+      values.push(input.title)
+    }
+    if (input.completed !== undefined) {
+      updates.push('completed = ?')
+      values.push(input.completed ? 1 : 0)
+    }
+
+    if (input.position !== undefined && Number.isInteger(input.position) && input.position >= 0 && input.position !== existing.position) {
+      const allSubtasks = await subtaskDB.listByTodoId(todoId)
+      const orderedIds = allSubtasks.map((item) => item.id)
+      const reorderedIds = reorderSubtaskIds(orderedIds, subtaskId, input.position)
+      const reorderedAssignments = buildSequentialAssignments(reorderedIds)
+
+      db.run('BEGIN TRANSACTION')
+      try {
+        // Two-phase updates avoid UNIQUE(todo_id, position) collisions during swaps.
+        reorderedAssignments.forEach((assignment) => {
+          db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [-(assignment.position + 1), now, assignment.id, todoId])
+        })
+        reorderedAssignments.forEach((assignment) => {
+          db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [assignment.position, now, assignment.id, todoId])
+        })
+        if (updates.length > 0) {
+          updates.push('updated_at = ?')
+          values.push(now)
+          values.push(subtaskId, todoId)
+          db.run(
+            `UPDATE subtasks SET ${updates.join(', ')} WHERE id = ? AND todo_id = ?`,
+            values
+          )
+        }
+        db.run('COMMIT')
+      } catch (error) {
+        db.run('ROLLBACK')
+        throw error
+      }
+
+      saveDb()
+      return subtaskDB.getById(subtaskId, todoId)
+    }
+
+    if (updates.length === 0) return existing
+
+    updates.push('updated_at = ?')
+    values.push(now)
+    values.push(subtaskId, todoId)
+
+    db.run(
+      `UPDATE subtasks SET ${updates.join(', ')} WHERE id = ? AND todo_id = ?`,
+      values
+    )
+
+    saveDb()
+    return subtaskDB.getById(subtaskId, todoId)
+  },
+
+  delete: async (subtaskId: number, todoId: number): Promise<boolean> => {
+    const db = await getDb()
+    const existing = await subtaskDB.getById(subtaskId, todoId)
+    if (!existing) return false
+
+    const now = getSingaporeNow().toISOString()
+    db.run('BEGIN TRANSACTION')
+    try {
+      db.run('DELETE FROM subtasks WHERE id = ? AND todo_id = ?', [subtaskId, todoId])
+      const remainingResult = db.exec(
+        'SELECT id FROM subtasks WHERE todo_id = ? ORDER BY position ASC',
+        [todoId]
+      )
+      const remainingIds: number[] = (remainingResult[0]?.values || []).map((row: any[]) => Number(row[0]))
+      const assignments = buildSequentialAssignments(remainingIds)
+
+      assignments.forEach((assignment) => {
+        db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [-(assignment.position + 1), now, assignment.id, todoId])
+      })
+      assignments.forEach((assignment) => {
+        db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [assignment.position, now, assignment.id, todoId])
+      })
+      db.run('COMMIT')
+    } catch (error) {
+      db.run('ROLLBACK')
+      throw error
+    }
+
+    saveDb()
+    return true
+  },
+
+  getById: async (subtaskId: number, todoId: number): Promise<Subtask | null> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, todo_id as todoId, title, position, completed, created_at as createdAt, updated_at as updatedAt
+       FROM subtasks
+       WHERE id = ? AND todo_id = ?`,
+      [subtaskId, todoId]
+    )
+
+    if (!result[0] || !result[0].values[0]) return null
+
+    const columnNames = result[0].columns
+    const row = result[0].values[0]
+    const obj = {} as any
+    columnNames.forEach((col: string, idx: number) => {
+      obj[col] = row[idx]
+    })
+
+    return {
+      ...obj,
+      completed: Boolean(obj.completed),
+    }
+  },
+
+  getProgress: async (todoId: number): Promise<{ total: number; completed: number; percent: number }> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT COUNT(*) as total, COALESCE(SUM(completed), 0) as completed
+       FROM subtasks
+       WHERE todo_id = ?`,
+      [todoId]
+    )
+
+    const total = Number(result[0]?.values?.[0]?.[0] ?? 0)
+    const completed = Number(result[0]?.values?.[0]?.[1] ?? 0)
+    return calculateSubtaskProgressFromCounts(total, completed)
   },
 }
 

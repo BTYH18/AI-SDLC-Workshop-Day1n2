@@ -23,7 +23,7 @@ export class TodoAppHelper {
     dueDate?: string
   ) {
     // Fill title
-    await this.page.fill('input[placeholder="What needs to be done?"]', title)
+    await this.page.fill('input[placeholder="Add a new todo..."]', title)
 
     // Select priority
     if (priority !== 'Medium') {
@@ -38,7 +38,7 @@ export class TodoAppHelper {
     }
 
     // Submit form
-    await this.page.click('button:has-text("Add Todo")')
+    await this.page.click('button:has-text("Add")')
     await this.page.waitForTimeout(500) // Wait for optimistic update
   }
 
@@ -46,8 +46,10 @@ export class TodoAppHelper {
    * Get all active todo items
    */
   async getActiveTodos() {
-    const section = this.page.locator('text=Active Todos').locator('..')
-    return section.locator('div[class*="rounded-lg shadow"] >> nth=-1').count()
+    const heading = this.page.locator('h3:has-text("Active Todos")').first()
+    const text = (await heading.textContent()) || ''
+    const match = text.match(/\((\d+)\)/)
+    return Number(match?.[1] || 0)
   }
 
   /**
@@ -65,7 +67,7 @@ export class TodoAppHelper {
    */
   async deleteTodo(title: string) {
     const todoRow = this.page.locator(`text="${title}"`).locator('..')
-    const deleteBtn = todoRow.locator('button:has-text("🗑️")').first()
+    const deleteBtn = todoRow.locator('button:has-text("✕")').first()
     await deleteBtn.click()
 
     // Wait for confirmation modal and click Delete
@@ -77,10 +79,49 @@ export class TodoAppHelper {
    * Get error message if shown
    */
   async getErrorMessage() {
-    const errorDiv = this.page.locator('div[class*="bg-red-50"]')
+    const errorDiv = this.page.locator('div[class*="bg-red-500/20"]')
     if (await errorDiv.isVisible()) {
       return await errorDiv.textContent()
     }
     return null
+  }
+
+  async toggleSubtaskPanel(todoTitle: string) {
+    const todoCard = this.page.locator(`p:has-text("${todoTitle}")`).first().locator('../..')
+    await todoCard.locator('button[aria-label="Toggle subtasks"]').click()
+    await this.page.waitForTimeout(200)
+  }
+
+  async addSubtask(todoTitle: string, subtaskTitle: string) {
+    const todoCard = this.page.locator(`p:has-text("${todoTitle}")`).first().locator('../..')
+    const input = todoCard.locator('input[placeholder="Add subtask"]')
+    if (!(await input.isVisible())) {
+      await this.toggleSubtaskPanel(todoTitle)
+    }
+    await input.fill(subtaskTitle)
+    await todoCard.locator('button:has-text("Add Subtask")').click()
+    await this.page.waitForTimeout(300)
+  }
+
+  async toggleSubtask(todoTitle: string, subtaskTitle: string) {
+    const todoCard = this.page.locator(`p:has-text("${todoTitle}")`).first().locator('../..')
+    const input = todoCard.locator('input[placeholder="Add subtask"]')
+    if (!(await input.isVisible())) {
+      await this.toggleSubtaskPanel(todoTitle)
+    }
+    const subtaskItem = todoCard.locator('[data-testid="subtask-item"]').filter({ hasText: subtaskTitle }).first()
+    await subtaskItem.locator('input[type="checkbox"]').click()
+    await this.page.waitForTimeout(300)
+  }
+
+  async deleteSubtask(todoTitle: string, subtaskTitle: string) {
+    const todoCard = this.page.locator(`p:has-text("${todoTitle}")`).first().locator('../..')
+    const input = todoCard.locator('input[placeholder="Add subtask"]')
+    if (!(await input.isVisible())) {
+      await this.toggleSubtaskPanel(todoTitle)
+    }
+    const subtaskItem = todoCard.locator('[data-testid="subtask-item"]').filter({ hasText: subtaskTitle }).first()
+    await subtaskItem.locator('button:has-text("✕")').click()
+    await this.page.waitForTimeout(300)
   }
 }

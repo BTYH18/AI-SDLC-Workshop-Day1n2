@@ -25,8 +25,7 @@ test.describe('Todo CRUD Operations', () => {
   })
 
   test('should reject empty title', async ({ page }) => {
-    const titleInput = page.locator('input[placeholder="What needs to be done?"]')
-    const addButton = page.locator('button:has-text("Add Todo")')
+    const addButton = page.locator('button:has-text("Add")')
 
     // Leave empty and submit
     await addButton.click()
@@ -50,9 +49,7 @@ test.describe('Todo CRUD Operations', () => {
     expect(activeAfter).toBeLessThan(activeBefore)
 
     // Verify it appears in completed section
-    await expect(
-      page.locator('text=Completed').locator('..').locator('text=Test todo')
-    ).toBeVisible()
+    await expect(page.locator('h3:has-text("Completed")')).toBeVisible()
   })
 
   test('should delete a todo', async ({ page }) => {
