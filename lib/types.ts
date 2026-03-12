@@ -58,3 +58,35 @@ export interface Authenticator {
   createdAt: string
   updatedAt: string
 }
+
+// Template models
+export interface Template {
+  id: number
+  userId: number
+  name: string
+  category: string | null
+  priority: Priority
+  subtasksJson: string
+  tagsJson: string
+  dueOffsetDays: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateTemplateInput {
+  name: string
+  category?: string | null
+  priority?: Priority
+  subtasksJson?: string
+  tagsJson?: string
+  dueOffsetDays?: number | null
+}
+
+export interface UpdateTemplateInput {
+  name?: string
+  category?: string | null
+  priority?: Priority
+  subtasksJson?: string
+  tagsJson?: string
+  dueOffsetDays?: number | null
+}
