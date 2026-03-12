@@ -640,6 +640,159 @@ export const templateDB = {
   },
 }
 
+interface ImportTodoRecord {
+  title: string
+  priority: Priority
+  dueDate: string | null
+  recurrencePattern: string | null
+  reminderMinutes: number | null
+  completed: boolean
+}
+
+interface ImportTemplateRecord {
+  name: string
+  category: string | null
+  priority: Priority
+  recurrencePattern: string | null
+  reminderMinutes: number | null
+  subtasksJson: string
+  tagsJson: string
+  dueOffsetDays: number | null
+}
+
+export const dataTransferDB = {
+  exportForUser: async (userId: number): Promise<{ todos: ImportTodoRecord[]; templates: ImportTemplateRecord[] }> => {
+    const db = await getDb()
+
+    const todosResult = db.exec(
+      `SELECT title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern,
+              reminder_minutes as reminderMinutes, completed
+       FROM todos
+       WHERE user_id = ?
+       ORDER BY id ASC`,
+      [userId]
+    )
+
+    const templatesResult = db.exec(
+      `SELECT name, category, priority, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes,
+              subtasks_json as subtasksJson, tags_json as tagsJson, due_offset_days as dueOffsetDays
+       FROM templates
+       WHERE user_id = ?
+       ORDER BY id ASC`,
+      [userId]
+    )
+
+    const mapRows = <T>(result: any): T[] => {
+      if (!result[0]) return []
+      const columnNames = result[0].columns
+      return result[0].values.map((row: any[]) => {
+        const obj: any = {}
+        columnNames.forEach((col: string, idx: number) => {
+          obj[col] = row[idx]
+        })
+        return obj as T
+      })
+    }
+
+    const todos = mapRows<ImportTodoRecord>(todosResult).map((todo) => ({
+      ...todo,
+      completed: Boolean((todo as any).completed),
+    }))
+
+    const templates = mapRows<ImportTemplateRecord>(templatesResult)
+
+    return { todos, templates }
+  },
+
+  importForUser: async (
+    userId: number,
+    payload: { todos: ImportTodoRecord[]; templates: ImportTemplateRecord[] }
+  ): Promise<{ todosImported: number; templatesImported: number }> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+    let todosImported = 0
+    let templatesImported = 0
+
+    db.run('BEGIN TRANSACTION')
+    try {
+      for (const todo of payload.todos) {
+        db.run(
+          `INSERT INTO todos (
+            user_id,
+            title,
+            priority,
+            generated_from_todo_id,
+            due_date,
+            recurrence_pattern,
+            reminder_minutes,
+            last_notification_sent,
+            snoozed_until,
+            next_instance_created,
+            completed,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            userId,
+            todo.title,
+            todo.priority,
+            null,
+            todo.dueDate,
+            todo.recurrencePattern,
+            todo.reminderMinutes,
+            null,
+            null,
+            0,
+            todo.completed ? 1 : 0,
+            now,
+            now,
+          ]
+        )
+        todosImported += 1
+      }
+
+      for (const template of payload.templates) {
+        db.run(
+          `INSERT INTO templates (
+            user_id,
+            name,
+            category,
+            priority,
+            recurrence_pattern,
+            reminder_minutes,
+            subtasks_json,
+            tags_json,
+            due_offset_days,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            userId,
+            template.name,
+            template.category,
+            template.priority,
+            template.recurrencePattern,
+            template.reminderMinutes,
+            template.subtasksJson,
+            template.tagsJson,
+            template.dueOffsetDays,
+            now,
+            now,
+          ]
+        )
+        templatesImported += 1
+      }
+
+      db.run('COMMIT')
+      saveDb()
+      return { todosImported, templatesImported }
+    } catch (error) {
+      db.run('ROLLBACK')
+      throw error
+    }
+  },
+}
+
 // holidays operations
 export const holidayDB = {
   create: async (date: string, name: string): Promise<Holiday> => {
