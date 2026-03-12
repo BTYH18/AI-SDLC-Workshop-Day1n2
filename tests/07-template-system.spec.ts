@@ -1,5 +1,20 @@
 import { expect, test } from '@playwright/test'
 
+function templateSelect(page: import('@playwright/test').Page) {
+  return page.locator('select', {
+    has: page.locator('option', { hasText: 'Select template to load/use' }),
+  })
+}
+
+async function selectTemplateByText(page: import('@playwright/test').Page, name: string) {
+  const advancedTemplateSelect = templateSelect(page)
+  const option = advancedTemplateSelect.locator('option', { hasText: name })
+  await expect(option).toHaveCount(1)
+  const value = await option.first().getAttribute('value')
+  expect(value).toBeTruthy()
+  await advancedTemplateSelect.selectOption(value || '')
+}
+
 test.describe('Template System', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/login')
@@ -11,11 +26,14 @@ test.describe('Template System', () => {
   })
 
   test('save, load, use, rename and delete template from advanced options', async ({ page }) => {
+    const templateName = `Weekly report ${Date.now()}`
+    const renamedTemplateName = `${templateName} renamed`
+
     const titleInput = page.getByPlaceholder('Add a new todo...')
     const prioritySelect = page.locator('select').first()
     const dueDateInput = page.locator('input[type="datetime-local"]').first()
 
-    await titleInput.fill('Weekly report')
+    await titleInput.fill(templateName)
     await prioritySelect.selectOption('high')
 
     const now = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
@@ -25,29 +43,26 @@ test.describe('Template System', () => {
     await page.getByRole('button', { name: 'Show Advanced Options' }).click()
     await page.getByRole('button', { name: 'Save Template' }).click()
 
-    const templateSelect = page.locator('select').nth(1)
-    const savedOptionValue = await templateSelect.locator('option', { hasText: 'Weekly report' }).first().getAttribute('value')
-    await templateSelect.selectOption(savedOptionValue || '')
+    await selectTemplateByText(page, templateName)
 
     await titleInput.fill('Temporary title')
     await prioritySelect.selectOption('low')
     await dueDateInput.fill('')
 
     await page.getByRole('button', { name: 'Load Into Form' }).click()
-    await expect(titleInput).toHaveValue('Weekly report')
+    await expect(titleInput).toHaveValue(templateName)
     await expect(prioritySelect).toHaveValue('high')
 
     await page.getByRole('button', { name: 'Use Template Now' }).click()
-    await expect(page.locator('p', { hasText: 'Weekly report' }).first()).toBeVisible()
+    await expect(page.locator('p', { hasText: templateName }).first()).toBeVisible()
 
     page.once('dialog', async (dialog) => {
       expect(dialog.message()).toContain('New template name')
-      await dialog.accept('Weekly report renamed')
+      await dialog.accept(renamedTemplateName)
     })
     await page.getByRole('button', { name: 'Rename Selected' }).click()
 
-    const renamedOptionValue = await templateSelect.locator('option', { hasText: 'Weekly report renamed' }).first().getAttribute('value')
-    await templateSelect.selectOption(renamedOptionValue || '')
+    await selectTemplateByText(page, renamedTemplateName)
 
     page.once('dialog', async (dialog) => {
       expect(dialog.message()).toContain('Delete selected template?')
@@ -55,6 +70,6 @@ test.describe('Template System', () => {
     })
     await page.getByRole('button', { name: 'Delete Selected' }).click()
 
-    await expect(templateSelect.locator('option', { hasText: 'Weekly report renamed' })).toHaveCount(0)
+    await expect(templateSelect(page).locator('option', { hasText: renamedTemplateName })).toHaveCount(0)
   })
 })

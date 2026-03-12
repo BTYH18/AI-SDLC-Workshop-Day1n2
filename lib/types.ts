@@ -2,6 +2,15 @@
 export type Priority = 'low' | 'medium' | 'high'
 export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly'
 
+export interface Tag {
+  id: number
+  userId: number
+  name: string
+  color: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Todo {
   id: number
   title: string
@@ -14,6 +23,7 @@ export interface Todo {
   snoozedUntil: string | null
   nextInstanceCreated: boolean
   completed: boolean
+  tags?: Tag[]
   createdAt: string
   updatedAt: string
 }
@@ -25,6 +35,7 @@ export interface CreateTodoInput {
   dueDate?: string
   recurrencePattern?: RecurrencePattern
   reminderMinutes?: number | null
+  tagIds?: number[]
 }
 
 export interface UpdateTodoInput {
@@ -37,6 +48,7 @@ export interface UpdateTodoInput {
   snoozedUntil?: string | null
   nextInstanceCreated?: boolean
   completed?: boolean
+  tagIds?: number[]
 }
 
 export interface ApiResponse<T> {

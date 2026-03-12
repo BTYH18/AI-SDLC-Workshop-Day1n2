@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Todo, Priority, RecurrencePattern, Template, UpdateTodoInput } from '@/lib/types'
+import { Todo, Priority, RecurrencePattern, Tag, Template, UpdateTodoInput } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 import { useNotifications } from '@/lib/hooks/useNotifications'
 
@@ -133,6 +133,13 @@ export default function Home() {
   const [formIsRecurring, setFormIsRecurring] = useState(false)
   const [formRecurrencePattern, setFormRecurrencePattern] = useState<RecurrencePattern>('daily')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [tags, setTags] = useState<Tag[]>([])
+  const [formTagIds, setFormTagIds] = useState<number[]>([])
+  const [editTagIds, setEditTagIds] = useState<number[]>([])
+  const [showTagManager, setShowTagManager] = useState(false)
+  const [newTagName, setNewTagName] = useState('')
+  const [newTagColor, setNewTagColor] = useState('#22c55e')
+  const [isSavingTag, setIsSavingTag] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -266,7 +273,7 @@ export default function Home() {
         router.replace('/login')
         return
       }
-      await Promise.all([fetchTodos(), fetchTemplates(), fetchHolidays()])
+      await Promise.all([fetchTodos(), fetchTemplates(), fetchHolidays(), fetchTags()])
     } catch {
       router.replace('/login')
     }
@@ -294,6 +301,132 @@ export default function Home() {
     } catch {
       // Keep using fallback holidays already in state
     }
+  }
+
+  const fetchTags = async () => {
+    try {
+      const res = await fetch('/api/tags')
+      if (!res.ok) return
+      const data = await res.json()
+      setTags(data.data || [])
+    } catch {
+      // Keep UI usable without tags on temporary API failures.
+    }
+  }
+
+  const toggleTagSelection = (currentTagIds: number[], tagId: number): number[] => {
+    return currentTagIds.includes(tagId)
+      ? currentTagIds.filter((id) => id !== tagId)
+      : [...currentTagIds, tagId]
+  }
+
+  const sameTagSelection = (left: number[], right: number[]): boolean => {
+    if (left.length !== right.length) return false
+    const leftSet = new Set(left)
+    return right.every((id) => leftSet.has(id))
+  }
+
+  const createTag = async () => {
+    const name = newTagName.trim()
+    if (!name) {
+      setError('Tag name is required')
+      return
+    }
+
+    setIsSavingTag(true)
+    try {
+      const res = await fetch('/api/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, color: newTagColor }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to create tag')
+
+      setNewTagName('')
+      setError(null)
+      await fetchTags()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsSavingTag(false)
+    }
+  }
+
+  const renameTag = async (tag: Tag) => {
+    const nextName = window.prompt('Rename tag', tag.name)
+    if (nextName === null) return
+
+    const trimmedName = nextName.trim()
+    if (!trimmedName) {
+      setError('Tag name cannot be empty')
+      return
+    }
+
+    try {
+      const res = await fetch('/api/tags', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: tag.id, name: trimmedName, color: tag.color }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to rename tag')
+      setError(null)
+      await fetchTags()
+      await fetchTodos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const updateTagColor = async (tag: Tag, color: string) => {
+    try {
+      const res = await fetch('/api/tags', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: tag.id, name: tag.name, color }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to update tag color')
+      setError(null)
+      await fetchTags()
+      await fetchTodos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const deleteTag = async (tag: Tag) => {
+    if (!window.confirm(`Delete tag "${tag.name}"?`)) return
+
+    try {
+      const res = await fetch('/api/tags', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: tag.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to delete tag')
+      setError(null)
+      setFormTagIds((current) => current.filter((id) => id !== tag.id))
+      setEditTagIds((current) => current.filter((id) => id !== tag.id))
+      await fetchTags()
+      await fetchTodos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const applyTagFromBadge = (tagName: string) => {
+    setTagFilterInput((current) => {
+      const existing = current
+        .split(',')
+        .map((value) => normalizeSearchText(value).replace(/^#/, ''))
+        .filter(Boolean)
+      if (existing.includes(normalizeSearchText(tagName))) return current
+      return [...existing, tagName].join(', ')
+    })
+    setShowTodoAdvancedFilters(true)
   }
 
   const fetchTodos = async () => {
@@ -352,6 +485,7 @@ export default function Home() {
           dueDate: formDueDate || undefined,
           recurrencePattern: formIsRecurring ? formRecurrencePattern : undefined,
           reminderMinutes: formReminderMinutes === '' ? undefined : formReminderMinutes,
+          tagIds: formTagIds,
         }),
       })
 
@@ -362,6 +496,7 @@ export default function Home() {
       setFormPriority('medium')
       setFormDueDate('')
       setFormReminderMinutes('')
+      setFormTagIds([])
       setFormIsRecurring(false)
       setFormRecurrencePattern('daily')
       setError(null)
@@ -643,6 +778,7 @@ export default function Home() {
     setEditReminderMinutes(todo.reminderMinutes ?? '')
     setEditIsRecurring(todo.recurrencePattern !== null)
     setEditRecurrencePattern(todo.recurrencePattern ?? 'daily')
+    setEditTagIds((todo.tags || []).map((tag) => tag.id))
     setEditError(null)
     setError(null)
   }
@@ -653,6 +789,7 @@ export default function Home() {
     setEditPriority('medium')
     setEditDueDate('')
     setEditReminderMinutes('')
+    setEditTagIds([])
     setEditIsRecurring(false)
     setEditRecurrencePattern('daily')
     setEditError(null)
@@ -702,6 +839,8 @@ export default function Home() {
     if (nextDueDate !== (currentTodo.dueDate ?? null)) payload.dueDate = nextDueDate
     if (nextRecurrencePattern !== (currentTodo.recurrencePattern ?? null)) payload.recurrencePattern = nextRecurrencePattern
     if (nextReminderMinutes !== (currentTodo.reminderMinutes ?? null)) payload.reminderMinutes = nextReminderMinutes
+    const currentTagIds = (currentTodo.tags || []).map((tag) => tag.id)
+    if (!sameTagSelection(editTagIds, currentTagIds)) payload.tagIds = editTagIds
 
     if (Object.keys(payload).length === 0) {
       closeEditTodo()
@@ -1155,6 +1294,12 @@ export default function Home() {
               🎁 Templates
             </button>
             <button
+              onClick={() => setShowTagManager((prev) => !prev)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              🏷️ Manage Tags
+            </button>
+            <button
               onClick={handleToggleNotifications}
               disabled={!notificationsSupported}
               aria-label={isNotificationsEnabled ? 'Turn notifications off' : 'Turn notifications on'}
@@ -1292,6 +1437,42 @@ export default function Home() {
               >
                 {isSubmitting ? 'Adding...' : 'Add'}
               </button>
+            </div>
+
+            <div className="bg-slate-700/20 border border-slate-600/40 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold tracking-wide text-slate-300">Tags</p>
+                <button
+                  type="button"
+                  onClick={() => setShowTagManager(true)}
+                  className="text-xs text-emerald-300 hover:text-emerald-200 transition-colors"
+                >
+                  Manage tags
+                </button>
+              </div>
+              {tags.length === 0 ? (
+                <p className="text-xs text-slate-400">No tags yet. Create one in Manage Tags.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {tags.map((tag) => {
+                    const selected = formTagIds.includes(tag.id)
+                    return (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        onClick={() => setFormTagIds((current) => toggleTagSelection(current, tag.id))}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                          selected
+                            ? 'border-emerald-400 text-white bg-emerald-600/40'
+                            : 'border-slate-600 text-slate-300 bg-slate-700/40'
+                        }`}
+                      >
+                        {tag.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
             {/* Advanced Options */}
             <button
@@ -1555,6 +1736,24 @@ export default function Home() {
                     <p className={`font-medium text-base break-words ${isOverdue(todo) ? 'text-red-400' : 'text-white'}`}>
                       {todo.title}
                     </p>
+                    {todo.tags && todo.tags.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {todo.tags.map((tag) => (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            onClick={() => applyTagFromBadge(tag.name)}
+                            className="px-2 py-0.5 rounded-full text-[11px] font-medium border text-white/90"
+                            style={{
+                              backgroundColor: `${tag.color || '#334155'}66`,
+                              borderColor: tag.color || '#64748b',
+                            }}
+                          >
+                            #{tag.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {todo.dueDate && (
                       <p className={`text-xs mt-1.5 font-medium ${isOverdue(todo) ? 'text-red-400' : 'text-slate-400'}`}>
                         📅 {formatSingaporeDate(new Date(todo.dueDate))}
@@ -1632,6 +1831,24 @@ export default function Home() {
                     <p className="font-medium line-through text-slate-500">
                       {todo.title}
                     </p>
+                    {todo.tags && todo.tags.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {todo.tags.map((tag) => (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            onClick={() => applyTagFromBadge(tag.name)}
+                            className="px-2 py-0.5 rounded-full text-[11px] font-medium border text-white/80"
+                            style={{
+                              backgroundColor: `${tag.color || '#334155'}55`,
+                              borderColor: tag.color || '#64748b',
+                            }}
+                          >
+                            #{tag.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {todo.recurrencePattern && (
                       <p className="text-xs mt-1 text-purple-300">
                         🔄 {todo.recurrencePattern}
@@ -1788,6 +2005,42 @@ export default function Home() {
                 </select>
               </div>
 
+              <div className="bg-slate-700/30 border border-slate-600/50 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold tracking-wide text-slate-300">Tags</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowTagManager(true)}
+                    className="text-xs text-emerald-300 hover:text-emerald-200 transition-colors"
+                  >
+                    Manage tags
+                  </button>
+                </div>
+                {tags.length === 0 ? (
+                  <p className="text-xs text-slate-400">No tags yet.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {tags.map((tag) => {
+                      const selected = editTagIds.includes(tag.id)
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={() => setEditTagIds((current) => toggleTagSelection(current, tag.id))}
+                          className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                            selected
+                              ? 'border-emerald-400 text-white bg-emerald-600/40'
+                              : 'border-slate-600 text-slate-300 bg-slate-700/40'
+                          }`}
+                        >
+                          {tag.name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
               <div className="flex gap-3 justify-end">
                 <button
                   type="button"
@@ -1855,6 +2108,91 @@ export default function Home() {
               >
                 {dismissingReminderIds.includes(pendingReminders[0].id) ? 'Dismissing...' : 'Dismiss'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTagManager && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowTagManager(false)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-slate-800/95 border border-slate-700 shadow-2xl rounded-2xl p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-white">Manage Tags</h3>
+              <button
+                type="button"
+                onClick={() => setShowTagManager(false)}
+                className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="bg-slate-700/30 border border-slate-600/50 rounded-lg p-4 mb-4">
+              <p className="text-xs font-semibold tracking-wide text-slate-300 mb-3">Create Tag</p>
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3">
+                <input
+                  type="text"
+                  value={newTagName}
+                  onChange={(e) => setNewTagName(e.target.value)}
+                  placeholder="Tag name"
+                  className="px-3 py-2 bg-slate-800/60 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <input
+                  type="color"
+                  value={newTagColor}
+                  onChange={(e) => setNewTagColor(e.target.value)}
+                  className="w-full md:w-14 h-10 bg-slate-800 border border-slate-600 rounded-lg"
+                />
+                <button
+                  type="button"
+                  onClick={createTag}
+                  disabled={isSavingTag}
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-600 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+                >
+                  {isSavingTag ? 'Saving...' : 'Add'}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {tags.length === 0 ? (
+                <p className="text-slate-400 text-sm">No tags created yet.</p>
+              ) : (
+                tags.map((tag) => (
+                  <div
+                    key={tag.id}
+                    className="flex items-center gap-3 bg-slate-900/60 border border-slate-700 rounded-lg p-3"
+                  >
+                    <input
+                      type="color"
+                      value={tag.color || '#64748b'}
+                      onChange={(e) => void updateTagColor(tag, e.target.value)}
+                      className="w-8 h-8 bg-slate-800 border border-slate-600 rounded"
+                    />
+                    <span className="text-white flex-1">{tag.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => renameTag(tag)}
+                      className="bg-slate-600 hover:bg-slate-500 text-white text-xs font-medium py-1.5 px-3 rounded-md transition-colors"
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteTag(tag)}
+                      className="bg-red-600 hover:bg-red-700 text-white text-xs font-medium py-1.5 px-3 rounded-md transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

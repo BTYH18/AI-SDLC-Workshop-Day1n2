@@ -24,7 +24,7 @@ test.describe('Notification Snooze API', () => {
     const res = await page.request.fetch('/api/notifications/snooze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      data: '{invalid-json',
+      data: Buffer.from('{invalid-json'),
     })
 
     expect(res.status()).toBe(400)

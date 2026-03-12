@@ -119,8 +119,22 @@ export async function POST(request: NextRequest) {
       reminderMinutes: body.reminderMinutes,
     })
 
+    if (Array.isArray(body.tagIds)) {
+      try {
+        await todoDB.setTags(session.userId, todo.id, body.tagIds)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Invalid tag IDs'
+        return NextResponse.json(
+          { success: false, error: message } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+    }
+
+    const createdTodo = await todoDB.getById(session.userId, todo.id)
+
     return NextResponse.json(
-      { success: true, data: todo } as ApiResponse<Todo>,
+      { success: true, data: createdTodo ?? todo } as ApiResponse<Todo>,
       { status: 201 }
     )
   } catch (error) {

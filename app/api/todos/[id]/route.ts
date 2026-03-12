@@ -171,6 +171,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       completed: body.completed,
     })
 
+    if (Array.isArray(body.tagIds)) {
+      try {
+        await todoDB.setTags(session.userId, todoId, body.tagIds)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Invalid tag IDs'
+        return NextResponse.json(
+          { success: false, error: message } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+    }
+
     if (!todo) {
       return NextResponse.json(
         { success: false, error: 'Todo not found' } as ApiResponse<null>,
@@ -190,7 +202,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
 
       if (!hasActiveChild) {
-        await todoDB.create(session.userId, {
+        const nextTodo = await todoDB.create(session.userId, {
           title: todo.title,
           priority: todo.priority,
           generatedFromTodoId: todoId,
@@ -200,12 +212,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           // even though the completed todo itself is auto-cleared to "No reminder".
           reminderMinutes: currentTodo.reminderMinutes,
         })
+
+        const sourceTagIds = (currentTodo.tags || []).map((tag) => tag.id)
+        if (sourceTagIds.length > 0) {
+          await todoDB.setTags(session.userId, nextTodo.id, sourceTagIds)
+        }
         await todoDB.update(session.userId, todoId, { nextInstanceCreated: true })
       }
     }
 
+    const updatedTodo = await todoDB.getById(session.userId, todoId)
     return NextResponse.json(
-      { success: true, data: todo } as ApiResponse<Todo>
+      { success: true, data: updatedTodo ?? todo } as ApiResponse<Todo>
     )
   } catch (error) {
     console.error('Error updating todo:', error)

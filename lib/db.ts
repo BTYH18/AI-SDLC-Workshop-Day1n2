@@ -6,6 +6,7 @@ import {
   CreateTodoInput,
   UpdateTodoInput,
   Priority,
+  Tag,
   User,
   Authenticator,
   Template,
@@ -140,6 +141,38 @@ export async function initializeDb() {
     `)
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_templates_user_id ON templates(user_id)')
 
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        color TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `)
+    try {
+      sqlDb.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_user_lower_name ON tags(user_id, LOWER(name))')
+    } catch {
+      // Fallback for sqlite builds without expression indexes.
+      sqlDb.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_user_name ON tags(user_id, name)')
+    }
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_tags_user_id ON tags(user_id)')
+
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS todo_tags (
+        todo_id INTEGER NOT NULL,
+        tag_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (todo_id, tag_id),
+        FOREIGN KEY(todo_id) REFERENCES todos(id) ON DELETE CASCADE,
+        FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+      )
+    `)
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_todo_tags_todo_id ON todo_tags(todo_id)')
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_todo_tags_tag_id ON todo_tags(tag_id)')
+
     try {
       sqlDb.run('ALTER TABLE templates ADD COLUMN recurrence_pattern TEXT')
     } catch {
@@ -189,6 +222,53 @@ async function getDb(): Promise<any> {
     await initializeDb()
   }
   return sqlDb
+}
+
+async function getTagsForTodoIds(db: any, userId: number, todoIds: number[]): Promise<Record<number, Tag[]>> {
+  if (todoIds.length === 0) return {}
+
+  const placeholders = todoIds.map(() => '?').join(',')
+  const tagResult = db.exec(
+    `SELECT tt.todo_id as todoId,
+            t.id,
+            t.user_id as userId,
+            t.name,
+            t.color,
+            t.created_at as createdAt,
+            t.updated_at as updatedAt
+     FROM todo_tags tt
+     INNER JOIN tags t ON tt.tag_id = t.id
+     WHERE t.user_id = ? AND tt.todo_id IN (${placeholders})
+     ORDER BY t.name ASC`,
+    [userId, ...todoIds]
+  )
+
+  if (!tagResult[0]) return {}
+
+  const todoIdIdx = tagResult[0].columns.indexOf('todoId')
+  const idIdx = tagResult[0].columns.indexOf('id')
+  const userIdIdx = tagResult[0].columns.indexOf('userId')
+  const nameIdx = tagResult[0].columns.indexOf('name')
+  const colorIdx = tagResult[0].columns.indexOf('color')
+  const createdAtIdx = tagResult[0].columns.indexOf('createdAt')
+  const updatedAtIdx = tagResult[0].columns.indexOf('updatedAt')
+
+  return tagResult[0].values.reduce((acc: Record<number, Tag[]>, row: any[]) => {
+    const todoId = Number(row[todoIdIdx])
+    const tag: Tag = {
+      id: Number(row[idIdx]),
+      userId: Number(row[userIdIdx]),
+      name: String(row[nameIdx]),
+      color: row[colorIdx] ? String(row[colorIdx]) : null,
+      createdAt: String(row[createdAtIdx]),
+      updatedAt: String(row[updatedAtIdx]),
+    }
+
+    return {
+      ...acc,
+      [todoId]: [...(acc[todoId] || []), tag],
+    }
+  }, {})
 }
 
 // CRUD Operations
@@ -262,7 +342,7 @@ export const todoDB = {
     if (!result[0]) return []
 
     const columnNames = result[0].columns
-    return result[0].values.map((row: any[]) => {
+    const todos = result[0].values.map((row: any[]) => {
       const obj = {} as any
       columnNames.forEach((col: string, idx: number) => {
         obj[col] = row[idx]
@@ -273,6 +353,12 @@ export const todoDB = {
         completed: Boolean(obj.completed),
       }
     })
+
+    const tagsByTodoId = await getTagsForTodoIds(db, userId, todos.map((todo: Todo) => todo.id))
+    return todos.map((todo: Todo) => ({
+      ...todo,
+      tags: tagsByTodoId[todo.id] || [],
+    }))
   },
 
   getById: async (userId: number, id: number): Promise<Todo | null> => {
@@ -292,10 +378,16 @@ export const todoDB = {
       obj[col] = row[idx]
     })
 
-    return {
+    const todo = {
       ...obj,
       nextInstanceCreated: Boolean(obj.nextInstanceCreated),
       completed: Boolean(obj.completed),
+    }
+
+    const tagsByTodoId = await getTagsForTodoIds(db, userId, [todo.id])
+    return {
+      ...todo,
+      tags: tagsByTodoId[todo.id] || [],
     }
   },
 
@@ -484,6 +576,171 @@ export const todoDB = {
        WHERE id = ? AND user_id = ?`,
       [snoozedUntilIso, nowIso, todoId, userId]
     )
+    saveDb()
+    return true
+  },
+
+  setTags: async (userId: number, todoId: number, tagIds: number[]): Promise<boolean> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+
+    const todo = await todoDB.getById(userId, todoId)
+    if (!todo) return false
+
+    const normalizedTagIds = Array.from(new Set(tagIds.filter((id) => Number.isInteger(id) && id > 0)))
+    const validTagIds = normalizedTagIds.length
+      ? (() => {
+          const placeholders = normalizedTagIds.map(() => '?').join(',')
+          const result = db.exec(
+            `SELECT id FROM tags WHERE user_id = ? AND id IN (${placeholders})`,
+            [userId, ...normalizedTagIds]
+          )
+          if (!result[0]) return []
+          return result[0].values.map((row: any[]) => Number(row[0]))
+        })()
+      : []
+
+    if (validTagIds.length !== normalizedTagIds.length) {
+      throw new Error('One or more tag IDs are invalid')
+    }
+
+    db.run(
+      `DELETE FROM todo_tags
+       WHERE todo_id IN (
+         SELECT id FROM todos WHERE id = ? AND user_id = ?
+       )`,
+      [todoId, userId]
+    )
+
+    validTagIds.forEach((tagId: number) => {
+      db.run(
+        'INSERT OR IGNORE INTO todo_tags (todo_id, tag_id, created_at) VALUES (?, ?, ?)',
+        [todoId, tagId, now]
+      )
+    })
+
+    saveDb()
+    return true
+  },
+
+  addTag: async (userId: number, todoId: number, tagId: number): Promise<boolean> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+    const todo = await todoDB.getById(userId, todoId)
+    if (!todo) return false
+
+    const tagRes = db.exec('SELECT id FROM tags WHERE id = ? AND user_id = ?', [tagId, userId])
+    if (!tagRes[0]?.values?.[0]) return false
+
+    db.run('INSERT OR IGNORE INTO todo_tags (todo_id, tag_id, created_at) VALUES (?, ?, ?)', [todoId, tagId, now])
+    saveDb()
+    return true
+  },
+
+  removeTag: async (userId: number, todoId: number, tagId: number): Promise<boolean> => {
+    const db = await getDb()
+    const todo = await todoDB.getById(userId, todoId)
+    if (!todo) return false
+
+    const tagRes = db.exec('SELECT id FROM tags WHERE id = ? AND user_id = ?', [tagId, userId])
+    if (!tagRes[0]?.values?.[0]) return false
+
+    db.run('DELETE FROM todo_tags WHERE todo_id = ? AND tag_id = ?', [todoId, tagId])
+    saveDb()
+    return true
+  },
+}
+
+export const tagDB = {
+  create: async (userId: number, name: string, color: string | null): Promise<Tag> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+    db.run(
+      'INSERT INTO tags (user_id, name, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [userId, name, color, now, now]
+    )
+    const result = db.exec('SELECT last_insert_rowid() as id')
+    const id = Number(result[0]?.values?.[0]?.[0])
+    saveDb()
+    return { id, userId, name, color, createdAt: now, updatedAt: now }
+  },
+
+  getAll: async (userId: number): Promise<Tag[]> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, user_id as userId, name, color, created_at as createdAt, updated_at as updatedAt
+       FROM tags
+       WHERE user_id = ?
+       ORDER BY name COLLATE NOCASE ASC`,
+      [userId]
+    )
+
+    if (!result[0]) return []
+    const columns = result[0].columns
+    return result[0].values.map((row: any[]) => {
+      const obj: any = {}
+      columns.forEach((col: string, idx: number) => {
+        obj[col] = row[idx]
+      })
+      return {
+        ...obj,
+        color: obj.color || null,
+      } as Tag
+    })
+  },
+
+  getById: async (userId: number, id: number): Promise<Tag | null> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, user_id as userId, name, color, created_at as createdAt, updated_at as updatedAt
+       FROM tags
+       WHERE user_id = ? AND id = ?`,
+      [userId, id]
+    )
+
+    if (!result[0]?.values?.[0]) return null
+    const row = result[0].values[0]
+    const columns = result[0].columns
+    const obj: any = {}
+    columns.forEach((col: string, idx: number) => {
+      obj[col] = row[idx]
+    })
+    return {
+      ...obj,
+      color: obj.color || null,
+    } as Tag
+  },
+
+  existsByName: async (userId: number, name: string, excludeId?: number): Promise<boolean> => {
+    const db = await getDb()
+    const trimmedName = name.trim().toLowerCase()
+    const params = excludeId !== undefined ? [userId, trimmedName, excludeId] : [userId, trimmedName]
+    const query = excludeId !== undefined
+      ? 'SELECT id FROM tags WHERE user_id = ? AND LOWER(name) = ? AND id != ? LIMIT 1'
+      : 'SELECT id FROM tags WHERE user_id = ? AND LOWER(name) = ? LIMIT 1'
+    const result = db.exec(query, params)
+    return Boolean(result[0]?.values?.[0])
+  },
+
+  update: async (userId: number, id: number, name: string, color: string | null): Promise<Tag | null> => {
+    const db = await getDb()
+    const now = getSingaporeNow().toISOString()
+    const current = await tagDB.getById(userId, id)
+    if (!current) return null
+
+    db.run(
+      'UPDATE tags SET name = ?, color = ?, updated_at = ? WHERE user_id = ? AND id = ?',
+      [name, color, now, userId, id]
+    )
+    saveDb()
+    return tagDB.getById(userId, id)
+  },
+
+  delete: async (userId: number, id: number): Promise<boolean> => {
+    const db = await getDb()
+    const current = await tagDB.getById(userId, id)
+    if (!current) return false
+    db.run('DELETE FROM tags WHERE user_id = ? AND id = ?', [userId, id])
     saveDb()
     return true
   },
