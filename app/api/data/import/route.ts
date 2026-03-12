@@ -70,6 +70,7 @@ function validatePayload(payload: unknown): {
     recurrencePattern: RecurrencePattern | null
     reminderMinutes: number | null
     completed: boolean
+    subtasks: Array<{ title: string; position: number; completed: boolean }>
   }>
   templates: Array<{
     name: string
@@ -109,6 +110,25 @@ function validatePayload(payload: unknown): {
 
     const completed = typeof todo.completed === 'boolean' ? todo.completed : false
 
+    const subtasks: Array<{ title: string; position: number; completed: boolean }> = []
+    if (Array.isArray(todo.subtasks)) {
+      todo.subtasks.forEach((subtask: unknown, sIdx: number) => {
+        if (!isRecord(subtask)) {
+          throw new Error(`Subtask at todo index ${index}, subtask index ${sIdx} is invalid`)
+        }
+        const subtaskTitle = typeof subtask.title === 'string' ? subtask.title.trim() : ''
+        if (!subtaskTitle) {
+          throw new Error(`Subtask at todo index ${index}, subtask index ${sIdx} is missing a title`)
+        }
+        const position =
+          typeof subtask.position === 'number' && Number.isInteger(subtask.position)
+            ? subtask.position
+            : sIdx
+        const subtaskCompleted = typeof subtask.completed === 'boolean' ? subtask.completed : false
+        subtasks.push({ title: subtaskTitle, position, completed: subtaskCompleted })
+      })
+    }
+
     return {
       title,
       priority: parsePriority(todo.priority ?? 'medium'),
@@ -116,6 +136,7 @@ function validatePayload(payload: unknown): {
       recurrencePattern: parseRecurrence(todo.recurrencePattern),
       reminderMinutes: parseReminderMinutes(todo.reminderMinutes),
       completed,
+      subtasks,
     }
   })
 

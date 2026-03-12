@@ -919,6 +919,12 @@ export const templateDB = {
   },
 }
 
+interface ImportSubtaskRecord {
+  title: string
+  position: number
+  completed: boolean
+}
+
 interface ImportTodoRecord {
   title: string
   priority: Priority
@@ -926,6 +932,7 @@ interface ImportTodoRecord {
   recurrencePattern: string | null
   reminderMinutes: number | null
   completed: boolean
+  subtasks: ImportSubtaskRecord[]
 }
 
 interface ImportTemplateRecord {
@@ -944,7 +951,7 @@ export const dataTransferDB = {
     const db = await getDb()
 
     const todosResult = db.exec(
-      `SELECT title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern,
+      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern,
               reminder_minutes as reminderMinutes, completed
        FROM todos
        WHERE user_id = ?
@@ -961,6 +968,15 @@ export const dataTransferDB = {
       [userId]
     )
 
+    const subtasksResult = db.exec(
+      `SELECT s.todo_id as todoId, s.title, s.position, s.completed
+       FROM subtasks s
+       INNER JOIN todos t ON t.id = s.todo_id
+       WHERE t.user_id = ?
+       ORDER BY s.todo_id ASC, s.position ASC`,
+      [userId]
+    )
+
     const mapRows = <T>(result: any): T[] => {
       if (!result[0]) return []
       const columnNames = result[0].columns
@@ -973,9 +989,33 @@ export const dataTransferDB = {
       })
     }
 
-    const todos = mapRows<ImportTodoRecord>(todosResult).map((todo) => ({
-      ...todo,
-      completed: Boolean((todo as any).completed),
+    type SubtaskRow = { todoId: number; title: string; position: number; completed: number }
+    const subtaskRows = mapRows<SubtaskRow>(subtasksResult)
+    const subtasksByTodoId = new Map<number, ImportSubtaskRecord[]>()
+    for (const row of subtaskRows) {
+      const list = subtasksByTodoId.get(row.todoId) || []
+      list.push({ title: row.title, position: row.position, completed: Boolean(row.completed) })
+      subtasksByTodoId.set(row.todoId, list)
+    }
+
+    type TodoRow = {
+      id: number
+      title: string
+      priority: Priority
+      dueDate: string | null
+      recurrencePattern: string | null
+      reminderMinutes: number | null
+      completed: number
+    }
+
+    const todos = mapRows<TodoRow>(todosResult).map((todo) => ({
+      title: todo.title,
+      priority: todo.priority,
+      dueDate: todo.dueDate,
+      recurrencePattern: todo.recurrencePattern,
+      reminderMinutes: todo.reminderMinutes,
+      completed: Boolean(todo.completed),
+      subtasks: subtasksByTodoId.get(todo.id) || [],
     }))
 
     const templates = mapRows<ImportTemplateRecord>(templatesResult)
@@ -1027,7 +1067,19 @@ export const dataTransferDB = {
             now,
           ]
         )
+        const todoIdResult = db.exec('SELECT last_insert_rowid() as id')
+        const newTodoId = todoIdResult[0]?.values[0]?.[0] as number
         todosImported += 1
+
+        if (todo.subtasks && todo.subtasks.length > 0) {
+          for (const subtask of todo.subtasks) {
+            db.run(
+              `INSERT INTO subtasks (todo_id, title, position, completed, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [newTodoId, subtask.title, subtask.position, subtask.completed ? 1 : 0, now, now]
+            )
+          }
+        }
       }
 
       for (const template of payload.templates) {
