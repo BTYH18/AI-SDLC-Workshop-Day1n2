@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Todo, Priority, RecurrencePattern, Template } from '@/lib/types'
+import { Todo, Priority, RecurrencePattern, Template, UpdateTodoInput } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
 import { useNotifications } from '@/lib/hooks/useNotifications'
 
@@ -35,9 +35,19 @@ export default function Home() {
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [togglingTodoIds, setTogglingTodoIds] = useState<number[]>([])
   const [snoozingReminderIds, setSnoozingReminderIds] = useState<number[]>([])
+  const [markingReminderDoneIds, setMarkingReminderDoneIds] = useState<number[]>([])
+  const [dismissingReminderIds, setDismissingReminderIds] = useState<number[]>([])
   const [dismissedReminderTodoIds, setDismissedReminderTodoIds] = useState<number[]>([])
   const [selectedSnoozeMinutes, setSelectedSnoozeMinutes] = useState<number>(30)
   const [countdownNowMs, setCountdownNowMs] = useState<number>(() => getSingaporeNow().getTime())
+  const [editTitle, setEditTitle] = useState('')
+  const [editPriority, setEditPriority] = useState<Priority>('medium')
+  const [editDueDate, setEditDueDate] = useState('')
+  const [editReminderMinutes, setEditReminderMinutes] = useState<number | ''>('')
+  const [editIsRecurring, setEditIsRecurring] = useState(false)
+  const [editRecurrencePattern, setEditRecurrencePattern] = useState<RecurrencePattern>('daily')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
   const {
     enabled: notificationsEnabled,
     supported: notificationsSupported,
@@ -191,6 +201,8 @@ export default function Home() {
           ? {
               ...item,
               completed: nextCompleted,
+              reminderMinutes: nextCompleted ? null : item.reminderMinutes,
+              snoozedUntil: nextCompleted ? null : item.snoozedUntil,
             }
           : item
       )
@@ -200,7 +212,11 @@ export default function Home() {
       const res = await fetch(`/api/todos/${todo.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed: nextCompleted }),
+        body: JSON.stringify(
+          nextCompleted
+            ? { completed: true, reminderMinutes: null, snoozedUntil: null }
+            : { completed: false }
+        ),
       })
 
       const data = await res.json()
@@ -221,6 +237,8 @@ export default function Home() {
             ? {
                 ...item,
                 completed: todo.completed,
+                reminderMinutes: todo.reminderMinutes,
+                snoozedUntil: todo.snoozedUntil,
               }
             : item
         )
@@ -429,6 +447,100 @@ export default function Home() {
     }
   }
 
+  const openEditTodo = (todo: Todo) => {
+    setEditingId(todo.id)
+    setEditTitle(todo.title)
+    setEditPriority(todo.priority)
+    setEditDueDate(todo.dueDate ? toDateTimeLocalValue(parseTodoDate(todo.dueDate)) : '')
+    setEditReminderMinutes(todo.reminderMinutes ?? '')
+    setEditIsRecurring(todo.recurrencePattern !== null)
+    setEditRecurrencePattern(todo.recurrencePattern ?? 'daily')
+    setEditError(null)
+    setError(null)
+  }
+
+  const closeEditTodo = () => {
+    setEditingId(null)
+    setEditTitle('')
+    setEditPriority('medium')
+    setEditDueDate('')
+    setEditReminderMinutes('')
+    setEditIsRecurring(false)
+    setEditRecurrencePattern('daily')
+    setEditError(null)
+    setIsSavingEdit(false)
+  }
+
+  const handleSaveEditTodo = async () => {
+    if (editingId === null) return
+
+    const currentTodo = todos.find((todo) => todo.id === editingId)
+    if (!currentTodo) {
+      setEditError('Todo not found')
+      return
+    }
+
+    const nextTitle = editTitle.trim()
+    if (!nextTitle) {
+      setEditError('Please enter a title')
+      return
+    }
+
+    if (editIsRecurring && !editDueDate) {
+      setEditError('Due date is required for recurring todos')
+      return
+    }
+
+    if (editReminderMinutes !== '' && !editDueDate) {
+      setEditError('Due date is required when reminder is set')
+      return
+    }
+
+    if (editReminderMinutes !== '' && editDueDate) {
+      const minutesUntilDue = Math.floor((new Date(editDueDate).getTime() - getSingaporeNow().getTime()) / 60000)
+      if (editReminderMinutes > minutesUntilDue) {
+        setEditError('Reminder must be earlier than the selected due time')
+        return
+      }
+    }
+
+    const nextDueDate = editDueDate || null
+    const nextRecurrencePattern = editIsRecurring ? editRecurrencePattern : null
+    const nextReminderMinutes = editReminderMinutes === '' ? null : editReminderMinutes
+
+    const payload: UpdateTodoInput = {}
+    if (nextTitle !== currentTodo.title) payload.title = nextTitle
+    if (editPriority !== currentTodo.priority) payload.priority = editPriority
+    if (nextDueDate !== (currentTodo.dueDate ?? null)) payload.dueDate = nextDueDate
+    if (nextRecurrencePattern !== (currentTodo.recurrencePattern ?? null)) payload.recurrencePattern = nextRecurrencePattern
+    if (nextReminderMinutes !== (currentTodo.reminderMinutes ?? null)) payload.reminderMinutes = nextReminderMinutes
+
+    if (Object.keys(payload).length === 0) {
+      closeEditTodo()
+      return
+    }
+
+    setIsSavingEdit(true)
+  setEditError(null)
+    try {
+      const res = await fetch(`/api/todos/${editingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to update todo')
+
+      closeEditTodo()
+      setError(null)
+      await fetchTodos()
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'An error occurred')
+      setIsSavingEdit(false)
+    }
+  }
+
   const getPriorityColor = (priority: Priority) => {
     switch (priority) {
       case 'high':
@@ -526,8 +638,63 @@ export default function Home() {
   }
 
   const handleDismissAlarm = (todoId: number) => {
-    dismissReminder(todoId)
-    setDismissedReminderTodoIds((current) => (current.includes(todoId) ? current : [...current, todoId]))
+    if (dismissingReminderIds.includes(todoId)) return
+
+    setDismissingReminderIds((current) => [...current, todoId])
+    void (async () => {
+      try {
+        const res = await fetch(`/api/todos/${todoId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reminderMinutes: null, snoozedUntil: null }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Failed to dismiss reminder')
+
+        setTodos((currentTodos) =>
+          currentTodos.map((todo) =>
+            todo.id === todoId
+              ? {
+                  ...todo,
+                  reminderMinutes: null,
+                  snoozedUntil: null,
+                }
+              : todo
+          )
+        )
+        dismissReminder(todoId)
+        setDismissedReminderTodoIds((current) => (current.includes(todoId) ? current : [...current, todoId]))
+        setError(null)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'An error occurred')
+      } finally {
+        setDismissingReminderIds((current) => current.filter((id) => id !== todoId))
+      }
+    })()
+  }
+
+  const handleMarkDoneFromReminder = async (todoId: number) => {
+    if (markingReminderDoneIds.includes(todoId)) return
+
+    setMarkingReminderDoneIds((current) => [...current, todoId])
+    try {
+      const res = await fetch(`/api/todos/${todoId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed: true, reminderMinutes: null, snoozedUntil: null }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to mark todo as done')
+
+      dismissReminder(todoId)
+      setDismissedReminderTodoIds((current) => current.filter((id) => id !== todoId))
+      setError(null)
+      await fetchTodos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setMarkingReminderDoneIds((current) => current.filter((id) => id !== todoId))
+    }
   }
 
   const parseTodoDate = (raw: string): Date => {
@@ -965,6 +1132,13 @@ export default function Home() {
                   )}
 
                   <button
+                    onClick={() => openEditTodo(todo)}
+                    className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-600 hover:bg-slate-500 text-white transition-colors"
+                  >
+                    Edit
+                  </button>
+
+                  <button
                     onClick={() => setDeleteConfirm(todo.id)}
                     className="text-slate-400 hover:text-red-500 transition-colors"
                   >
@@ -1056,6 +1230,114 @@ export default function Home() {
         </div>
       )}
 
+      {/* Edit Todo Modal */}
+      {editingId !== null && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl p-6 w-full max-w-2xl">
+            <h3 className="text-lg font-semibold text-white mb-4">Edit Todo</h3>
+            <div className="space-y-4">
+              {editError && (
+                <div className="bg-red-500/20 border border-red-500/50 text-red-300 px-3 py-2 rounded-lg text-sm">
+                  {editError}
+                </div>
+              )}
+
+              <input
+                type="text"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-700/60 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Todo title"
+                disabled={isSavingEdit}
+              />
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <select
+                  value={editPriority}
+                  onChange={(e) => setEditPriority(e.target.value as Priority)}
+                  className="px-4 py-3 bg-slate-700/60 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={isSavingEdit}
+                >
+                  <option value="low">🟢 Low</option>
+                  <option value="medium">🟡 Medium</option>
+                  <option value="high">🔴 High</option>
+                </select>
+
+                <input
+                  type="datetime-local"
+                  value={editDueDate}
+                  onChange={(e) => setEditDueDate(e.target.value)}
+                  className="px-4 py-3 bg-slate-700/60 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={isSavingEdit}
+                />
+
+                <select
+                  value={editReminderMinutes}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setEditReminderMinutes(value === '' ? '' : Number(value))
+                  }}
+                  disabled={isSavingEdit || !editDueDate}
+                  className="px-4 py-3 bg-slate-700/60 border border-slate-600 rounded-lg text-white disabled:text-slate-500 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">No reminder</option>
+                  {REMINDER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="flex items-center gap-2 px-3 py-2 bg-slate-700/60 border border-slate-600 rounded-lg">
+                  <input
+                    id="edit-recurring-toggle"
+                    type="checkbox"
+                    checked={editIsRecurring}
+                    onChange={(e) => setEditIsRecurring(e.target.checked)}
+                    className="w-4 h-4 text-blue-500 rounded"
+                    disabled={isSavingEdit}
+                  />
+                  <label htmlFor="edit-recurring-toggle" className="text-sm text-white">Repeat</label>
+                </div>
+
+                <select
+                  value={editRecurrencePattern}
+                  onChange={(e) => setEditRecurrencePattern(e.target.value as RecurrencePattern)}
+                  disabled={isSavingEdit || !editIsRecurring}
+                  className="px-4 py-3 bg-slate-700/60 border border-slate-600 rounded-lg text-white disabled:text-slate-500 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+              </div>
+
+              <div className="flex gap-3 justify-end">
+                <button
+                  type="button"
+                  onClick={closeEditTodo}
+                  disabled={isSavingEdit}
+                  className="bg-slate-600 hover:bg-slate-500 disabled:bg-slate-700 text-white font-medium py-2 px-4 rounded-lg transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveEditTodo}
+                  disabled={isSavingEdit}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition"
+                >
+                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* In-app Reminder Popup */}
       {pendingReminders.length > 0 && (
         <div className="fixed bottom-6 right-6 z-50 w-full max-w-sm">
@@ -1078,6 +1360,13 @@ export default function Home() {
             </div>
             <div className="flex gap-2">
               <button
+                onClick={() => handleMarkDoneFromReminder(pendingReminders[0].id)}
+                disabled={markingReminderDoneIds.includes(pendingReminders[0].id)}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-900/60 disabled:cursor-not-allowed text-white font-medium py-2 px-3 rounded-lg transition"
+              >
+                {markingReminderDoneIds.includes(pendingReminders[0].id) ? 'Marking...' : 'Mark Done'}
+              </button>
+              <button
                 onClick={() => handleSnoozeReminder(pendingReminders[0].id, selectedSnoozeMinutes)}
                 disabled={snoozingReminderIds.includes(pendingReminders[0].id)}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-900/60 disabled:cursor-not-allowed text-white font-medium py-2 px-3 rounded-lg transition"
@@ -1088,9 +1377,10 @@ export default function Home() {
               </button>
               <button
                 onClick={() => handleDismissAlarm(pendingReminders[0].id)}
-                className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-medium py-2 px-3 rounded-lg transition"
+                disabled={dismissingReminderIds.includes(pendingReminders[0].id)}
+                className="flex-1 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-900/60 disabled:cursor-not-allowed text-white font-medium py-2 px-3 rounded-lg transition"
               >
-                Dismiss
+                {dismissingReminderIds.includes(pendingReminders[0].id) ? 'Dismissing...' : 'Dismiss'}
               </button>
             </div>
           </div>

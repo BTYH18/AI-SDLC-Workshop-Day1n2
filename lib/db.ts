@@ -86,6 +86,17 @@ export async function initializeDb() {
     } catch {
       // Column already exists
     }
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN next_instance_created INTEGER NOT NULL DEFAULT 0')
+    } catch {
+      // Column already exists
+    }
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN generated_from_todo_id INTEGER')
+    } catch {
+      // Column already exists
+    }
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_todos_generated_from ON todos(generated_from_todo_id)')
 
     // auth tables
     sqlDb.run(`
@@ -167,21 +178,25 @@ export const todoDB = {
         user_id,
         title,
         priority,
+        generated_from_todo_id,
         due_date,
         recurrence_pattern,
         reminder_minutes,
         last_notification_sent,
+        next_instance_created,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
       [
         userId,
         input.title,
         priority,
+        input.generatedFromTodoId ?? null,
         input.dueDate || null,
         input.recurrencePattern || null,
         input.reminderMinutes ?? null,
         null,
+        0,
         now,
         now,
       ]
@@ -197,11 +212,13 @@ export const todoDB = {
       id,
       title: input.title,
       priority: priority as Priority,
+      generatedFromTodoId: input.generatedFromTodoId ?? null,
       dueDate: input.dueDate || null,
       recurrencePattern: input.recurrencePattern || null,
       reminderMinutes: input.reminderMinutes ?? null,
       lastNotificationSent: null,
       snoozedUntil: null,
+      nextInstanceCreated: false,
       completed: false,
       createdAt: now,
       updatedAt: now,
@@ -211,7 +228,7 @@ export const todoDB = {
   getAll: async (userId: number): Promise<Todo[]> => {
     const db = await getDb()
     const result = db.exec(`
-      SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil, completed, created_at as createdAt, updated_at as updatedAt
+      SELECT id, title, priority, generated_from_todo_id as generatedFromTodoId, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil, next_instance_created as nextInstanceCreated, completed, created_at as createdAt, updated_at as updatedAt
       FROM todos
       WHERE user_id = ?
       ORDER BY priority = 'high' DESC, priority = 'medium' DESC, due_date ASC, created_at DESC
@@ -227,6 +244,7 @@ export const todoDB = {
       })
       return {
         ...obj,
+        nextInstanceCreated: Boolean(obj.nextInstanceCreated),
         completed: Boolean(obj.completed),
       }
     })
@@ -235,7 +253,7 @@ export const todoDB = {
   getById: async (userId: number, id: number): Promise<Todo | null> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil, completed, created_at as createdAt, updated_at as updatedAt
+      `SELECT id, title, priority, generated_from_todo_id as generatedFromTodoId, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil, next_instance_created as nextInstanceCreated, completed, created_at as createdAt, updated_at as updatedAt
        FROM todos WHERE id = ? AND user_id = ?`,
       [id, userId]
     )
@@ -251,6 +269,7 @@ export const todoDB = {
 
     return {
       ...obj,
+      nextInstanceCreated: Boolean(obj.nextInstanceCreated),
       completed: Boolean(obj.completed),
     }
   },
@@ -292,6 +311,10 @@ export const todoDB = {
       updates.push('snoozed_until = ?')
       values.push(input.snoozedUntil)
     }
+    if (input.nextInstanceCreated !== undefined) {
+      updates.push('next_instance_created = ?')
+      values.push(input.nextInstanceCreated ? 1 : 0)
+    }
     if (input.completed !== undefined) {
       updates.push('completed = ?')
       values.push(input.completed ? 1 : 0)
@@ -320,6 +343,34 @@ export const todoDB = {
     db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
+  },
+
+  hasActiveRecurringChild: async (
+    userId: number,
+    sourceTodoId: number,
+    title: string,
+    nextDueDateIso: string,
+    recurrencePattern: string
+  ): Promise<boolean> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id FROM todos
+       WHERE user_id = ?
+         AND completed = 0
+         AND (
+           generated_from_todo_id = ?
+           OR (
+             generated_from_todo_id IS NULL
+             AND title = ?
+             AND due_date = ?
+             AND recurrence_pattern = ?
+           )
+         )
+       LIMIT 1`,
+      [userId, sourceTodoId, title, nextDueDateIso, recurrencePattern]
+    )
+
+    return Boolean(result[0]?.values?.[0])
   },
 
   getDueNotifications: async (userId: number, nowIso: string): Promise<Array<{ id: number; title: string }>> => {
