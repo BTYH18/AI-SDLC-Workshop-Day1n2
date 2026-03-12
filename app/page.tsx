@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Todo, Priority, RecurrencePattern, Template, UpdateTodoInput } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
@@ -15,6 +15,111 @@ const REMINDER_OPTIONS: Array<{ value: number; label: string }> = [
   { value: 2880, label: '2d before' },
   { value: 10080, label: '1w before' },
 ]
+
+const SEARCH_DEBOUNCE_MS = 200
+const ALL_PRIORITIES: Priority[] = ['high', 'medium', 'low']
+
+type TodoStatusFilter = 'all' | 'active' | 'completed'
+type TodoDueFilter = 'all' | 'overdue' | 'today' | 'next7days' | 'noDueDate'
+type TodoRecurrenceFilter = 'all' | 'recurring' | 'nonRecurring'
+type TodoReminderFilter = 'all' | 'withReminder' | 'withoutReminder'
+
+interface ParsedSearchQuery {
+  textTerms: string[]
+  priorityTokens: Priority[]
+  tagTokens: string[]
+}
+
+const normalizeSearchText = (value: string): string => value.trim().toLowerCase()
+
+const unique = <T extends string>(values: T[]): T[] => Array.from(new Set(values))
+
+const getSingaporeDayWindow = (date: Date): { startMs: number; endMs: number } => {
+  const parts = new Intl.DateTimeFormat('en-SG', {
+    timeZone: 'Asia/Singapore',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+
+  const year = Number(parts.find((part) => part.type === 'year')?.value || '1970')
+  const month = Number(parts.find((part) => part.type === 'month')?.value || '01')
+  const day = Number(parts.find((part) => part.type === 'day')?.value || '01')
+
+  const startMs = new Date(
+    `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00:00+08:00`
+  ).getTime()
+  const endMs = new Date(
+    `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T23:59:59.999+08:00`
+  ).getTime()
+
+  return { startMs, endMs }
+}
+
+const parseSearchQuery = (query: string): ParsedSearchQuery => {
+  const tokens = query
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+
+  const priorityTokens: Priority[] = []
+  const tagTokens: string[] = []
+  const textTerms: string[] = []
+
+  for (const token of tokens) {
+    const normalizedToken = normalizeSearchText(token)
+
+    if (normalizedToken.startsWith('priority:')) {
+      const value = normalizedToken.slice('priority:'.length)
+      if (value === 'high' || value === 'medium' || value === 'low') {
+        priorityTokens.push(value)
+        continue
+      }
+      textTerms.push(normalizedToken)
+      continue
+    }
+
+    if (normalizedToken.startsWith('tag:')) {
+      const value = normalizedToken.slice('tag:'.length).replace(/^#/, '')
+      if (value) {
+        tagTokens.push(value)
+        continue
+      }
+      textTerms.push(normalizedToken)
+      continue
+    }
+
+    textTerms.push(normalizedToken)
+  }
+
+  return {
+    textTerms,
+    priorityTokens: unique(priorityTokens),
+    tagTokens: unique(tagTokens),
+  }
+}
+
+const extractHashtagsFromTitle = (title: string): string[] => {
+  const hashtagMatches = title.toLowerCase().match(/#[\p{L}\p{N}_-]+/gu) || []
+  return unique(hashtagMatches.map((tag) => tag.replace(/^#/, '')))
+}
+
+const getTodoTagNames = (todo: Todo): string[] => {
+  const runtimeTodo = todo as Todo & {
+    tags?: Array<string | { name?: string | null }>
+    tagNames?: string[]
+  }
+
+  const tagsFromRuntime = [
+    ...(runtimeTodo.tagNames || []),
+    ...((runtimeTodo.tags || []).map((tag) => (typeof tag === 'string' ? tag : tag?.name || ''))),
+  ]
+    .map((tag) => normalizeSearchText(tag))
+    .filter(Boolean)
+
+  return unique([...tagsFromRuntime, ...extractHashtagsFromTitle(todo.title)])
+}
 
 export default function Home() {
   const router = useRouter()
@@ -31,7 +136,14 @@ export default function Home() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
+  const [showTodoAdvancedFilters, setShowTodoAdvancedFilters] = useState(false)
+  const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>(ALL_PRIORITIES)
+  const [statusFilter, setStatusFilter] = useState<TodoStatusFilter>('all')
+  const [dueFilter, setDueFilter] = useState<TodoDueFilter>('all')
+  const [recurrenceFilter, setRecurrenceFilter] = useState<TodoRecurrenceFilter>('all')
+  const [reminderFilter, setReminderFilter] = useState<TodoReminderFilter>('all')
+  const [tagFilterInput, setTagFilterInput] = useState('')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [togglingTodoIds, setTogglingTodoIds] = useState<number[]>([])
   const [snoozingReminderIds, setSnoozingReminderIds] = useState<number[]>([])
@@ -81,6 +193,16 @@ export default function Home() {
       setFormReminderMinutes('')
     }
   }, [formReminderMinutes, minutesUntilDue])
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery)
+    }, SEARCH_DEBOUNCE_MS)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [searchQuery])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -584,7 +706,7 @@ export default function Home() {
 
   const isOverdue = (todo: Todo) => {
     if (!todo.dueDate || todo.completed) return false
-    return new Date(todo.dueDate) < getSingaporeNow()
+    return parseTodoDate(todo.dueDate).getTime() < getSingaporeNow().getTime()
   }
 
   const getReminderLabel = (minutes: number | null) => {
@@ -793,15 +915,120 @@ export default function Home() {
     return `Overdue by ${formatElapsedDuration(overdueMs)}`
   }
 
-  // Filter todos based on search and priority
-  const filteredTodos = todos.filter((todo) => {
-    const matchesSearch = todo.title.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesPriority = priorityFilter === 'all' || todo.priority === priorityFilter
-    return matchesSearch && matchesPriority
-  })
+  const parsedSearchQuery = useMemo(() => parseSearchQuery(debouncedSearchQuery), [debouncedSearchQuery])
 
-  const activeTodos = filteredTodos.filter((t) => !t.completed).sort((a, b) => getPriorityValue(b.priority) - getPriorityValue(a.priority))
-  const completedTodos = filteredTodos.filter((t) => t.completed)
+  const manualTagTerms = useMemo(
+    () =>
+      unique(
+        tagFilterInput
+          .split(',')
+          .map((value) => normalizeSearchText(value).replace(/^#/, ''))
+          .filter(Boolean)
+      ),
+    [tagFilterInput]
+  )
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0
+    if (debouncedSearchQuery.trim()) count += 1
+    if (selectedPriorities.length !== ALL_PRIORITIES.length) count += 1
+    if (statusFilter !== 'all') count += 1
+    if (dueFilter !== 'all') count += 1
+    if (recurrenceFilter !== 'all') count += 1
+    if (reminderFilter !== 'all') count += 1
+    if (manualTagTerms.length > 0) count += 1
+    return count
+  }, [debouncedSearchQuery, selectedPriorities, statusFilter, dueFilter, recurrenceFilter, reminderFilter, manualTagTerms])
+
+  const togglePrioritySelection = (priority: Priority) => {
+    setSelectedPriorities((current) => {
+      if (current.includes(priority)) {
+        const next = current.filter((value) => value !== priority)
+        return next.length === 0 ? ALL_PRIORITIES : next
+      }
+      return [...current, priority]
+    })
+  }
+
+  const clearAllTodoFilters = () => {
+    setSearchQuery('')
+    setDebouncedSearchQuery('')
+    setSelectedPriorities(ALL_PRIORITIES)
+    setStatusFilter('all')
+    setDueFilter('all')
+    setRecurrenceFilter('all')
+    setReminderFilter('all')
+    setTagFilterInput('')
+  }
+
+  const filteredTodos = useMemo(() => {
+    const now = getSingaporeNow()
+    const nowMs = now.getTime()
+    const singaporeToday = getSingaporeDayWindow(now)
+    const nextSevenDaysMs = nowMs + 7 * 24 * 60 * 60 * 1000
+
+    const allTagTerms = unique([...manualTagTerms, ...parsedSearchQuery.tagTokens])
+
+    return todos.filter((todo) => {
+      const todoTitle = normalizeSearchText(todo.title)
+      const todoTagNames = getTodoTagNames(todo)
+
+      const matchesText = parsedSearchQuery.textTerms.every(
+        (term) => todoTitle.includes(term) || todoTagNames.some((tag) => tag.includes(term))
+      )
+
+      const matchesPrioritySelection = selectedPriorities.includes(todo.priority)
+      const matchesPriorityToken =
+        parsedSearchQuery.priorityTokens.length === 0 || parsedSearchQuery.priorityTokens.includes(todo.priority)
+
+      const matchesStatus =
+        statusFilter === 'all' || (statusFilter === 'active' ? !todo.completed : todo.completed)
+
+      const hasReminder = todo.reminderMinutes !== null
+      const matchesReminder =
+        reminderFilter === 'all' || (reminderFilter === 'withReminder' ? hasReminder : !hasReminder)
+
+      const isRecurringTodo = Boolean(todo.recurrencePattern)
+      const matchesRecurrence =
+        recurrenceFilter === 'all' || (recurrenceFilter === 'recurring' ? isRecurringTodo : !isRecurringTodo)
+
+      const parsedDueDate = todo.dueDate ? parseTodoDate(todo.dueDate) : null
+      const dueDateMs = parsedDueDate?.getTime() ?? NaN
+
+      let matchesDueFilter = true
+      if (dueFilter === 'noDueDate') {
+        matchesDueFilter = !todo.dueDate
+      } else if (dueFilter === 'overdue') {
+        matchesDueFilter = !todo.completed && Boolean(todo.dueDate) && !isNaN(dueDateMs) && dueDateMs < nowMs
+      } else if (dueFilter === 'today') {
+        matchesDueFilter =
+          Boolean(todo.dueDate) && !isNaN(dueDateMs) && dueDateMs >= singaporeToday.startMs && dueDateMs <= singaporeToday.endMs
+      } else if (dueFilter === 'next7days') {
+        matchesDueFilter =
+          Boolean(todo.dueDate) && !isNaN(dueDateMs) && dueDateMs >= nowMs && dueDateMs <= nextSevenDaysMs
+      }
+
+      const matchesTagTerms =
+        allTagTerms.length === 0 || allTagTerms.every((term) => todoTagNames.some((tag) => tag.includes(term)))
+
+      return (
+        matchesText &&
+        matchesPrioritySelection &&
+        matchesPriorityToken &&
+        matchesStatus &&
+        matchesReminder &&
+        matchesRecurrence &&
+        matchesDueFilter &&
+        matchesTagTerms
+      )
+    })
+  }, [todos, parsedSearchQuery, selectedPriorities, statusFilter, dueFilter, recurrenceFilter, reminderFilter, manualTagTerms])
+
+  const activeTodos = useMemo(
+    () => filteredTodos.filter((todo) => !todo.completed).sort((a, b) => getPriorityValue(b.priority) - getPriorityValue(a.priority)),
+    [filteredTodos]
+  )
+  const completedTodos = useMemo(() => filteredTodos.filter((todo) => todo.completed), [filteredTodos])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
@@ -871,6 +1098,7 @@ export default function Home() {
                 placeholder="Add a new todo..."
                 value={formTitle}
                 onChange={(e) => setFormTitle(e.target.value)}
+                data-testid="create-todo-title-input"
                 className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/50 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 disabled={isSubmitting}
               />
@@ -882,6 +1110,7 @@ export default function Home() {
                 <select
                   value={formPriority}
                   onChange={(e) => setFormPriority(e.target.value as Priority)}
+                  data-testid="create-todo-priority-select"
                   className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   disabled={isSubmitting}
                 >
@@ -955,12 +1184,12 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={isSubmitting}
+                data-testid="create-todo-submit"
                 className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
               >
                 {isSubmitting ? 'Adding...' : 'Add'}
               </button>
             </div>
-
             {/* Advanced Options */}
             <button
               type="button"
@@ -1059,32 +1288,135 @@ export default function Home() {
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">🔍</span>
                 <input
                   type="text"
-                  placeholder="Search todos and subtasks..."
+                  placeholder="Search todos (try priority:high or tag:work)..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  data-testid="todo-search-input"
                   className="w-full pl-10 pr-4 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                 />
               </div>
+              <p className="mt-2 text-xs text-slate-400">Token search: priority:high, priority:medium, priority:low, tag:work</p>
             </div>
 
-            {/* Priority Filter */}
+            {/* Status Filter */}
             <select
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(e.target.value as Priority | 'all')}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as TodoStatusFilter)}
               className="px-4 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
             >
-              <option value="all">All Priorities</option>
-              <option value="high">🔴 High Priority</option>
-              <option value="medium">🟡 Medium Priority</option>
-              <option value="low">🟢 Low Priority</option>
+              <option value="all">All Statuses</option>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
             </select>
           </div>
 
-          <div className="mt-3">
-            <button className="flex items-center gap-2 text-slate-400 hover:text-slate-300 text-sm font-medium transition-colors">
-              ▶ Advanced
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowTodoAdvancedFilters((prev) => !prev)}
+              data-testid="todo-advanced-filters-toggle"
+              className="flex items-center gap-2 text-slate-300 hover:text-white text-sm font-medium transition-colors"
+            >
+              {showTodoAdvancedFilters ? '▼' : '▶'} Advanced Filters
+            </button>
+
+            {activeFilterCount > 0 && (
+              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                {activeFilterCount} active filter{activeFilterCount === 1 ? '' : 's'}
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={clearAllTodoFilters}
+              data-testid="todo-filters-clear-all"
+              className="text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              Clear all
             </button>
           </div>
+
+          {showTodoAdvancedFilters && (
+            <div className="mt-4 bg-slate-700/20 border border-slate-600/40 rounded-lg p-4 space-y-4">
+              <div>
+                <p className="text-xs font-semibold tracking-wide text-slate-300 mb-2">Priority</p>
+                <div className="flex flex-wrap gap-2">
+                  {ALL_PRIORITIES.map((priority) => {
+                    const isActive = selectedPriorities.includes(priority)
+                    return (
+                      <button
+                        key={priority}
+                        type="button"
+                        onClick={() => togglePrioritySelection(priority)}
+                        className={`px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors ${
+                          isActive
+                            ? 'bg-blue-600/30 text-blue-200 border-blue-500/50'
+                            : 'bg-slate-700/40 text-slate-400 border-slate-600/50 hover:text-slate-200'
+                        }`}
+                      >
+                        {priority.toUpperCase()}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold tracking-wide text-slate-300 mb-1">Due Date</label>
+                  <select
+                    value={dueFilter}
+                    onChange={(e) => setDueFilter(e.target.value as TodoDueFilter)}
+                    className="w-full px-3 py-2 bg-slate-800/60 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">Any due date</option>
+                    <option value="overdue">Overdue</option>
+                    <option value="today">Due today</option>
+                    <option value="next7days">Due in next 7 days</option>
+                    <option value="noDueDate">No due date</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold tracking-wide text-slate-300 mb-1">Recurrence</label>
+                  <select
+                    value={recurrenceFilter}
+                    onChange={(e) => setRecurrenceFilter(e.target.value as TodoRecurrenceFilter)}
+                    className="w-full px-3 py-2 bg-slate-800/60 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">Any recurrence</option>
+                    <option value="recurring">Recurring only</option>
+                    <option value="nonRecurring">Non-recurring only</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold tracking-wide text-slate-300 mb-1">Reminder</label>
+                  <select
+                    value={reminderFilter}
+                    onChange={(e) => setReminderFilter(e.target.value as TodoReminderFilter)}
+                    className="w-full px-3 py-2 bg-slate-800/60 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">Any reminder</option>
+                    <option value="withReminder">With reminder</option>
+                    <option value="withoutReminder">Without reminder</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold tracking-wide text-slate-300 mb-1">Tags (comma separated)</label>
+                <input
+                  type="text"
+                  value={tagFilterInput}
+                  onChange={(e) => setTagFilterInput(e.target.value)}
+                  placeholder="work, urgent"
+                  className="w-full px-3 py-2 bg-slate-800/60 border border-slate-600/50 rounded-lg text-white text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">Tag matching currently uses todo tags when present, otherwise falls back to hashtags in the title.</p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Loading State */}
@@ -1225,6 +1557,19 @@ export default function Home() {
         {!loading && todos.length === 0 && (
           <div className="text-center py-16">
             <p className="text-slate-400 text-lg">No todos yet. Add one above!</p>
+          </div>
+        )}
+
+        {!loading && todos.length > 0 && filteredTodos.length === 0 && (
+          <div className="text-center py-16">
+            <p className="text-slate-300 text-lg">No results match your current search and filters.</p>
+            <button
+              type="button"
+              onClick={clearAllTodoFilters}
+              className="mt-3 text-sm font-medium text-blue-300 hover:text-blue-200 transition-colors"
+            >
+              Clear search and filters
+            </button>
           </div>
         )}
       </div>
