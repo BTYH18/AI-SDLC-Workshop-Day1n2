@@ -189,6 +189,13 @@ export default function Home() {
   const [templateCategory, setTemplateCategory] = useState('')
   const [isSavingTemplate, setIsSavingTemplate] = useState(false)
   const [isUsingTemplate, setIsUsingTemplate] = useState(false)
+  const [showDataView, setShowDataView] = useState(false)
+  const [isExportingData, setIsExportingData] = useState(false)
+  const [isImportingData, setIsImportingData] = useState(false)
+  const [dataImportFile, setDataImportFile] = useState<File | null>(null)
+  const [dataImportError, setDataImportError] = useState<string | null>(null)
+  const [dataImportSuccess, setDataImportSuccess] = useState<string | null>(null)
+  const [dataFileInputKey, setDataFileInputKey] = useState(0)
   const [showCalendarView, setShowCalendarView] = useState(false)
   const [holidays, setHolidays] = useState<Array<{ id: number; date: string; name: string }>>([
     // Singapore public holidays seeded as fallback (will be overridden by API)
@@ -471,6 +478,100 @@ export default function Home() {
       })
     } finally {
       router.replace('/login')
+    }
+  }
+
+  const closeDataView = () => {
+    setShowDataView(false)
+    setDataImportFile(null)
+    setDataImportError(null)
+    setDataImportSuccess(null)
+    setDataFileInputKey((current) => current + 1)
+  }
+
+  const handleExportData = async () => {
+    setIsExportingData(true)
+    setDataImportError(null)
+    setDataImportSuccess(null)
+
+    try {
+      const response = await fetch('/api/data/export')
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null)
+        throw new Error(errorData?.error || 'Failed to export data')
+      }
+
+      const blob = await response.blob()
+      const disposition = response.headers.get('content-disposition') || ''
+      const filenameMatch = /filename="?([^\"]+)"?/.exec(disposition)
+      const filename = filenameMatch?.[1] || `todo-backup-${new Date().toISOString().slice(0, 10)}.json`
+
+      const blobUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(blobUrl)
+
+      setDataImportSuccess('Export completed. Your backup file has been downloaded.')
+    } catch (err) {
+      setDataImportError(err instanceof Error ? err.message : 'Failed to export data')
+    } finally {
+      setIsExportingData(false)
+    }
+  }
+
+  const handleImportData = async () => {
+    if (!dataImportFile) {
+      setDataImportError('Choose a JSON file before importing.')
+      return
+    }
+
+    if (dataImportFile.size > 5 * 1024 * 1024) {
+      setDataImportError('Import file is too large (max 5MB).')
+      return
+    }
+
+    setIsImportingData(true)
+    setDataImportError(null)
+    setDataImportSuccess(null)
+
+    try {
+      const rawText = await dataImportFile.text()
+      let payload: unknown
+
+      try {
+        payload = JSON.parse(rawText)
+      } catch {
+        throw new Error('The selected file is not valid JSON.')
+      }
+
+      const response = await fetch('/api/data/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to import data')
+      }
+
+      const todosImported = Number(data?.data?.todosImported ?? 0)
+      const templatesImported = Number(data?.data?.templatesImported ?? 0)
+
+      await Promise.all([fetchTodos(), fetchTemplates()])
+
+      setDataImportFile(null)
+      setDataFileInputKey((current) => current + 1)
+      setDataImportSuccess(`Import successful: ${todosImported} todo(s), ${templatesImported} template(s).`)
+    } catch (err) {
+      setDataImportError(err instanceof Error ? err.message : 'Failed to import data')
+    } finally {
+      setIsImportingData(false)
     }
   }
 
@@ -1427,7 +1528,22 @@ export default function Home() {
             <h1 className="text-3xl font-bold text-white">Todo App</h1>
           </div>
           <div className="flex items-center gap-3">
-            <button className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            <button
+              data-testid="data-modal-trigger"
+              onClick={() => {
+                setShowDataView((prev) => {
+                  const next = !prev
+                  if (next) {
+                    setShowCalendarView(false)
+                    setShowTemplatesView(false)
+                    setDataImportError(null)
+                    setDataImportSuccess(null)
+                  }
+                  return next
+                })
+              }}
+              className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
               📊 Data
             </button>
             <button
@@ -2606,6 +2722,96 @@ export default function Home() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showDataView && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={closeDataView}
+        >
+          <div
+            data-testid="data-modal"
+            className="w-full max-w-2xl bg-slate-800/95 border border-slate-700 shadow-2xl rounded-2xl p-6 md:p-8"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-2xl font-semibold text-white">Data Management</h3>
+                <p className="text-sm text-slate-400 mt-1">Export or import todos and templates as JSON backup files.</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeDataView}
+                className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+
+            {dataImportError && (
+              <div data-testid="data-import-error" className="mb-4 bg-red-500/20 border border-red-500/50 text-red-300 px-4 py-3 rounded-lg text-sm">
+                {dataImportError}
+              </div>
+            )}
+
+            {dataImportSuccess && (
+              <div data-testid="data-import-success" className="mb-4 bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 px-4 py-3 rounded-lg text-sm">
+                {dataImportSuccess}
+              </div>
+            )}
+
+            <div className="space-y-6">
+              <section className="bg-slate-900/50 border border-slate-700 rounded-xl p-4">
+                <h4 className="text-white font-semibold mb-2">Export Backup</h4>
+                <p className="text-sm text-slate-400 mb-4">Download all your todos and templates into a single JSON file.</p>
+                <button
+                  type="button"
+                  data-testid="data-export-button"
+                  onClick={handleExportData}
+                  disabled={isExportingData}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                >
+                  {isExportingData ? 'Exporting...' : 'Export JSON'}
+                </button>
+              </section>
+
+              <section className="bg-slate-900/50 border border-slate-700 rounded-xl p-4">
+                <h4 className="text-white font-semibold mb-2">Import Backup</h4>
+                <p className="text-sm text-slate-400 mb-4">Choose a JSON backup file and import it into your current account.</p>
+
+                <input
+                  key={dataFileInputKey}
+                  data-testid="data-import-file"
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null
+                    setDataImportFile(file)
+                    setDataImportError(null)
+                    setDataImportSuccess(null)
+                  }}
+                  className="block w-full text-sm text-slate-200 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-slate-700 file:text-slate-100 hover:file:bg-slate-600"
+                />
+
+                {dataImportFile && (
+                  <p className="mt-3 text-xs text-slate-300">
+                    Selected: {dataImportFile.name} ({(dataImportFile.size / 1024).toFixed(1)} KB)
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  data-testid="data-import-button"
+                  onClick={handleImportData}
+                  disabled={!dataImportFile || isImportingData}
+                  className="mt-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                >
+                  {isImportingData ? 'Importing...' : 'Import JSON'}
+                </button>
+              </section>
+            </div>
           </div>
         </div>
       )}
