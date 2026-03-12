@@ -52,6 +52,9 @@ export default function Home() {
     enabled: notificationsEnabled,
     supported: notificationsSupported,
     requestPermission,
+    isNotificationsEnabled,
+    setIsNotificationsEnabled,
+    clearPendingReminders,
     pendingReminders,
     dismissReminder,
   } = useNotifications()
@@ -598,11 +601,27 @@ export default function Home() {
     return map[minutes] || `${minutes}m`
   }
 
-  const handleEnableNotifications = async () => {
+  const handleToggleNotifications = async () => {
+    if (!notificationsSupported) {
+      setError('Notifications are not supported in this browser.')
+      return
+    }
+
+    if (isNotificationsEnabled) {
+      setIsNotificationsEnabled(false)
+      clearPendingReminders()
+      setError(null)
+      return
+    }
+
     const granted = await requestPermission()
     if (!granted) {
       setError('Notifications were not enabled. Please allow browser notification permission.')
+      return
     }
+
+    setIsNotificationsEnabled(true)
+    setError(null)
   }
 
   const handleSnoozeReminder = async (todoId: number, minutes: number) => {
@@ -806,15 +825,16 @@ export default function Home() {
               🎁 Templates
             </button>
             <button
-              onClick={handleEnableNotifications}
-              disabled={!notificationsSupported || notificationsEnabled}
+              onClick={handleToggleNotifications}
+              disabled={!notificationsSupported}
+              aria-label={isNotificationsEnabled ? 'Turn notifications off' : 'Turn notifications on'}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                notificationsEnabled
+                isNotificationsEnabled
                   ? 'bg-emerald-600 text-white'
                   : 'bg-orange-500 hover:bg-orange-600 text-white'
               } ${!notificationsSupported ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {notificationsEnabled ? 'Notifications On' : 'Enable Notifications'}
+              {isNotificationsEnabled ? '🔔' : '🔕'}
             </button>
             <button
               onClick={handleLogout}
@@ -1344,7 +1364,7 @@ export default function Home() {
       )}
 
       {/* In-app Reminder Popup */}
-      {pendingReminders.length > 0 && (
+      {isNotificationsEnabled && notificationsEnabled && pendingReminders.length > 0 && (
         <div className="fixed bottom-6 right-6 z-50 w-full max-w-sm">
           <div className="bg-slate-800 border border-orange-400/50 rounded-xl shadow-2xl p-4">
             <p className="text-orange-300 font-semibold mb-1">Reminder</p>
