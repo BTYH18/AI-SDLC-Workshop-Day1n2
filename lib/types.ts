@@ -66,6 +66,8 @@ export interface Template {
   name: string
   category: string | null
   priority: Priority
+  recurrencePattern: RecurrencePattern | null
+  reminderMinutes: number | null
   subtasksJson: string
   tagsJson: string
   dueOffsetDays: number | null
@@ -77,6 +79,8 @@ export interface CreateTemplateInput {
   name: string
   category?: string | null
   priority?: Priority
+  recurrencePattern?: RecurrencePattern | null
+  reminderMinutes?: number | null
   subtasksJson?: string
   tagsJson?: string
   dueOffsetDays?: number | null
@@ -86,6 +90,8 @@ export interface UpdateTemplateInput {
   name?: string
   category?: string | null
   priority?: Priority
+  recurrencePattern?: RecurrencePattern | null
+  reminderMinutes?: number | null
   subtasksJson?: string
   tagsJson?: string
   dueOffsetDays?: number | null

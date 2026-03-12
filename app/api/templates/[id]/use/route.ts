@@ -56,6 +56,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       title: template.name,
       priority: template.priority,
       dueDate,
+      recurrencePattern: template.recurrencePattern ?? undefined,
+      reminderMinutes: template.reminderMinutes,
     })
 
     return NextResponse.json({ success: true, data: todo } as ApiResponse<Todo>, { status: 201 })

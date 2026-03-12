@@ -263,6 +263,8 @@ export default function Home() {
           name: formTitle.trim(),
           category: templateCategory.trim() || null,
           priority: formPriority,
+          recurrencePattern: formIsRecurring ? formRecurrencePattern : null,
+          reminderMinutes: formReminderMinutes === '' ? null : formReminderMinutes,
           dueOffsetDays: calculateDueOffsetDays(),
           subtasksJson: '[]',
           tagsJson: '[]',
@@ -307,6 +309,9 @@ export default function Home() {
 
     setFormTitle(template.name)
     setFormPriority(template.priority)
+    setFormIsRecurring(template.recurrencePattern !== null)
+    setFormRecurrencePattern(template.recurrencePattern ?? 'daily')
+    setFormReminderMinutes(template.reminderMinutes ?? '')
 
     if (template.dueOffsetDays === null) {
       setFormDueDate('')
@@ -798,7 +803,7 @@ export default function Home() {
                     {isSavingTemplate ? 'Saving...' : 'Save Template'}
                   </button>
                   <div className="text-xs text-slate-400 flex items-center">
-                    Saves current title, priority, and due date offset.
+                    Saves current title, priority, due date offset, reminder, and repeat settings.
                   </div>
                 </div>
 
@@ -1143,6 +1148,12 @@ export default function Home() {
                               <p className="text-xs text-slate-400 mt-1">
                                 {template.dueOffsetDays === null ? 'No due date' : `Due in ${template.dueOffsetDays} day(s)`}
                               </p>
+                              {template.recurrencePattern && (
+                                <p className="text-xs text-purple-300 mt-1">🔄 {template.recurrencePattern}</p>
+                              )}
+                              {template.reminderMinutes !== null && (
+                                <p className="text-xs text-orange-300 mt-1">🔔 {getReminderLabel(template.reminderMinutes)}</p>
+                              )}
                             </div>
                             <span className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getPriorityColor(template.priority)}`}>
                               {template.priority.toUpperCase()}

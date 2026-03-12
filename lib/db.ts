@@ -116,6 +116,8 @@ export async function initializeDb() {
         name TEXT NOT NULL,
         category TEXT,
         priority TEXT NOT NULL DEFAULT 'medium',
+        recurrence_pattern TEXT,
+        reminder_minutes INTEGER,
         subtasks_json TEXT NOT NULL DEFAULT '[]',
         tags_json TEXT NOT NULL DEFAULT '[]',
         due_offset_days INTEGER,
@@ -125,6 +127,17 @@ export async function initializeDb() {
       )
     `)
     sqlDb.run('CREATE INDEX IF NOT EXISTS idx_templates_user_id ON templates(user_id)')
+
+    try {
+      sqlDb.run('ALTER TABLE templates ADD COLUMN recurrence_pattern TEXT')
+    } catch {
+      // Column already exists
+    }
+    try {
+      sqlDb.run('ALTER TABLE templates ADD COLUMN reminder_minutes INTEGER')
+    } catch {
+      // Column already exists
+    }
 
     // backfill legacy todos to first user so existing data remains visible
     const firstUserRes = sqlDb.exec('SELECT id FROM users ORDER BY id LIMIT 1')
@@ -419,14 +432,16 @@ export const templateDB = {
     const now = getSingaporeNow().toISOString()
     const priority = input.priority || 'medium'
     const category = input.category || null
+    const recurrencePattern = input.recurrencePattern ?? null
+    const reminderMinutes = input.reminderMinutes ?? null
     const subtasksJson = input.subtasksJson || '[]'
     const tagsJson = input.tagsJson || '[]'
     const dueOffsetDays = input.dueOffsetDays ?? null
 
     db.run(
-      `INSERT INTO templates (user_id, name, category, priority, subtasks_json, tags_json, due_offset_days, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [userId, input.name, category, priority, subtasksJson, tagsJson, dueOffsetDays, now, now]
+      `INSERT INTO templates (user_id, name, category, priority, recurrence_pattern, reminder_minutes, subtasks_json, tags_json, due_offset_days, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, input.name, category, priority, recurrencePattern, reminderMinutes, subtasksJson, tagsJson, dueOffsetDays, now, now]
     )
 
     const result = db.exec('SELECT last_insert_rowid() as id')
@@ -440,6 +455,8 @@ export const templateDB = {
       name: input.name,
       category,
       priority: priority as Priority,
+      recurrencePattern,
+      reminderMinutes,
       subtasksJson,
       tagsJson,
       dueOffsetDays,
@@ -451,7 +468,7 @@ export const templateDB = {
   getAll: async (userId: number): Promise<Template[]> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, user_id as userId, name, category, priority, subtasks_json as subtasksJson, tags_json as tagsJson,
+      `SELECT id, user_id as userId, name, category, priority, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, subtasks_json as subtasksJson, tags_json as tagsJson,
               due_offset_days as dueOffsetDays, created_at as createdAt, updated_at as updatedAt
        FROM templates
        WHERE user_id = ?
@@ -474,7 +491,7 @@ export const templateDB = {
   getById: async (userId: number, id: number): Promise<Template | null> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, user_id as userId, name, category, priority, subtasks_json as subtasksJson, tags_json as tagsJson,
+      `SELECT id, user_id as userId, name, category, priority, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, subtasks_json as subtasksJson, tags_json as tagsJson,
               due_offset_days as dueOffsetDays, created_at as createdAt, updated_at as updatedAt
        FROM templates
        WHERE id = ? AND user_id = ?`,
@@ -513,6 +530,14 @@ export const templateDB = {
     if (input.priority !== undefined) {
       updates.push('priority = ?')
       values.push(input.priority)
+    }
+    if (input.recurrencePattern !== undefined) {
+      updates.push('recurrence_pattern = ?')
+      values.push(input.recurrencePattern)
+    }
+    if (input.reminderMinutes !== undefined) {
+      updates.push('reminder_minutes = ?')
+      values.push(input.reminderMinutes)
     }
     if (input.subtasksJson !== undefined) {
       updates.push('subtasks_json = ?')

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { templateDB } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { ApiResponse, CreateTemplateInput, Priority, Template } from '@/lib/types'
+import { ApiResponse, CreateTemplateInput, Priority, RecurrencePattern, Template } from '@/lib/types'
+
+const validPatterns = new Set<RecurrencePattern>(['daily', 'weekly', 'monthly', 'yearly'])
+const validReminderMinutes = new Set([15, 30, 60, 120, 1440, 2880, 10080])
 
 function parseJsonArrayString(raw: string | undefined, fallback: string): string {
   if (raw === undefined) return fallback
@@ -82,6 +85,22 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    if (body.recurrencePattern !== undefined && body.recurrencePattern !== null && !validPatterns.has(body.recurrencePattern)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid recurrence pattern' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
+    if (body.reminderMinutes !== undefined && body.reminderMinutes !== null) {
+      if (!validReminderMinutes.has(body.reminderMinutes)) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid reminder timing' } as ApiResponse<null>,
+          { status: 400 }
+        )
+      }
+    }
+
     if (
       body.dueOffsetDays !== undefined &&
       body.dueOffsetDays !== null &&
@@ -93,10 +112,26 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    if (body.recurrencePattern && (body.dueOffsetDays === undefined || body.dueOffsetDays === null)) {
+      return NextResponse.json(
+        { success: false, error: 'Due date offset is required for recurring templates' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
+    if (body.reminderMinutes !== undefined && body.reminderMinutes !== null && (body.dueOffsetDays === undefined || body.dueOffsetDays === null)) {
+      return NextResponse.json(
+        { success: false, error: 'Due date offset is required when reminder is set' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
     const template = await templateDB.create(session.userId, {
       name: body.name.trim(),
       category: body.category?.trim() || null,
       priority: body.priority,
+      recurrencePattern: body.recurrencePattern ?? null,
+      reminderMinutes: body.reminderMinutes ?? null,
       subtasksJson: parseJsonArrayString(body.subtasksJson, '[]'),
       tagsJson: parseJsonArrayString(body.tagsJson, '[]'),
       dueOffsetDays: body.dueOffsetDays ?? null,
