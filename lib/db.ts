@@ -78,6 +78,11 @@ export async function initializeDb() {
     } catch {
       // Column already exists
     }
+    try {
+      sqlDb.run('ALTER TABLE todos ADD COLUMN snoozed_until TEXT')
+    } catch {
+      // Column already exists
+    }
 
     // auth tables
     sqlDb.run(`
@@ -176,6 +181,7 @@ export const todoDB = {
       recurrencePattern: input.recurrencePattern || null,
       reminderMinutes: input.reminderMinutes ?? null,
       lastNotificationSent: null,
+      snoozedUntil: null,
       completed: false,
       createdAt: now,
       updatedAt: now,
@@ -185,7 +191,7 @@ export const todoDB = {
   getAll: async (userId: number): Promise<Todo[]> => {
     const db = await getDb()
     const result = db.exec(`
-      SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, completed, created_at as createdAt, updated_at as updatedAt
+      SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil, completed, created_at as createdAt, updated_at as updatedAt
       FROM todos
       WHERE user_id = ?
       ORDER BY priority = 'high' DESC, priority = 'medium' DESC, due_date ASC, created_at DESC
@@ -209,7 +215,7 @@ export const todoDB = {
   getById: async (userId: number, id: number): Promise<Todo | null> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, completed, created_at as createdAt, updated_at as updatedAt
+      `SELECT id, title, priority, due_date as dueDate, recurrence_pattern as recurrencePattern, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil, completed, created_at as createdAt, updated_at as updatedAt
        FROM todos WHERE id = ? AND user_id = ?`,
       [id, userId]
     )
@@ -262,6 +268,10 @@ export const todoDB = {
       updates.push('last_notification_sent = ?')
       values.push(input.lastNotificationSent)
     }
+    if (input.snoozedUntil !== undefined) {
+      updates.push('snoozed_until = ?')
+      values.push(input.snoozedUntil)
+    }
     if (input.completed !== undefined) {
       updates.push('completed = ?')
       values.push(input.completed ? 1 : 0)
@@ -295,7 +305,7 @@ export const todoDB = {
   getDueNotifications: async (userId: number, nowIso: string): Promise<Array<{ id: number; title: string }>> => {
     const db = await getDb()
     const result = db.exec(
-      `SELECT id, title, due_date as dueDate, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent
+      `SELECT id, title, due_date as dueDate, reminder_minutes as reminderMinutes, last_notification_sent as lastNotificationSent, snoozed_until as snoozedUntil
        FROM todos
        WHERE user_id = ?
          AND completed = 0
@@ -327,11 +337,19 @@ export const todoDB = {
         dueDate: String(row[2]),
         reminderMinutes: Number(row[3]),
         lastNotificationSent: row[4] ? String(row[4]) : null,
+        snoozedUntil: row[5] ? String(row[5]) : null,
       }))
       .filter((todo) => {
         const dueDate = parseDueDate(todo.dueDate)
         const dueMs = dueDate.getTime()
         if (isNaN(dueMs) || !Number.isFinite(todo.reminderMinutes)) return false
+
+        if (todo.snoozedUntil) {
+          const snoozedUntilMs = new Date(todo.snoozedUntil).getTime()
+          if (!isNaN(snoozedUntilMs) && nowMs < snoozedUntilMs) {
+            return false
+          }
+        }
 
         const triggerAtMs = dueMs - todo.reminderMinutes * 60 * 1000
         if (nowMs < triggerAtMs) return false
@@ -356,6 +374,22 @@ export const todoDB = {
       [sentAtIso, sentAtIso, userId, ...todoIds]
     )
     saveDb()
+  },
+
+  snoozeNotification: async (userId: number, todoId: number, snoozedUntilIso: string): Promise<boolean> => {
+    const db = await getDb()
+    const todo = await todoDB.getById(userId, todoId)
+    if (!todo || todo.completed || !todo.dueDate || todo.reminderMinutes === null) return false
+
+    const nowIso = getSingaporeNow().toISOString()
+    db.run(
+      `UPDATE todos
+       SET snoozed_until = ?, updated_at = ?
+       WHERE id = ? AND user_id = ?`,
+      [snoozedUntilIso, nowIso, todoId, userId]
+    )
+    saveDb()
+    return true
   },
 }
 

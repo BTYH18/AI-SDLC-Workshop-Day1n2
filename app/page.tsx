@@ -33,6 +33,11 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [togglingTodoIds, setTogglingTodoIds] = useState<number[]>([])
+  const [snoozingReminderIds, setSnoozingReminderIds] = useState<number[]>([])
+  const [dismissedReminderTodoIds, setDismissedReminderTodoIds] = useState<number[]>([])
+  const [selectedSnoozeMinutes, setSelectedSnoozeMinutes] = useState<number>(30)
+  const [countdownNowMs, setCountdownNowMs] = useState<number>(() => getSingaporeNow().getTime())
   const {
     enabled: notificationsEnabled,
     supported: notificationsSupported,
@@ -56,6 +61,16 @@ export default function Home() {
       setFormReminderMinutes('')
     }
   }, [formReminderMinutes, minutesUntilDue])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCountdownNowMs(getSingaporeNow().getTime())
+    }, 30000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [])
 
   const checkSessionAndLoad = async () => {
     try {
@@ -148,19 +163,53 @@ export default function Home() {
   }
 
   const handleToggle = async (todo: Todo) => {
+    if (togglingTodoIds.includes(todo.id)) return
+
+    const nextCompleted = !todo.completed
+    setTogglingTodoIds((current) => [...current, todo.id])
+    setTodos((currentTodos) =>
+      currentTodos.map((item) =>
+        item.id === todo.id
+          ? {
+              ...item,
+              completed: nextCompleted,
+            }
+          : item
+      )
+    )
+
     try {
       const res = await fetch(`/api/todos/${todo.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed: !todo.completed }),
+        body: JSON.stringify({ completed: nextCompleted }),
       })
 
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to update todo')
 
-      fetchTodos()
+      if (nextCompleted) {
+        dismissReminder(todo.id)
+        setDismissedReminderTodoIds((current) => (current.includes(todo.id) ? current : [...current, todo.id]))
+      } else {
+        setDismissedReminderTodoIds((current) => current.filter((id) => id !== todo.id))
+      }
+
+      await fetchTodos()
     } catch (err) {
+      setTodos((currentTodos) =>
+        currentTodos.map((item) =>
+          item.id === todo.id
+            ? {
+                ...item,
+                completed: todo.completed,
+              }
+            : item
+        )
+      )
       setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setTogglingTodoIds((current) => current.filter((id) => id !== todo.id))
     }
   }
 
@@ -232,6 +281,120 @@ export default function Home() {
     if (!granted) {
       setError('Notifications were not enabled. Please allow browser notification permission.')
     }
+  }
+
+  const handleSnoozeReminder = async (todoId: number, minutes: number) => {
+    if (snoozingReminderIds.includes(todoId)) return
+
+    setSnoozingReminderIds((current) => [...current, todoId])
+    try {
+      const res = await fetch('/api/notifications/snooze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ todoId, minutes }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to snooze reminder')
+
+      const snoozedUntil = typeof data?.data?.snoozedUntil === 'string' ? data.data.snoozedUntil : null
+      if (snoozedUntil) {
+        setTodos((currentTodos) =>
+          currentTodos.map((todo) =>
+            todo.id === todoId
+              ? {
+                  ...todo,
+                  snoozedUntil,
+                }
+              : todo
+          )
+        )
+      }
+
+      dismissReminder(todoId)
+      setDismissedReminderTodoIds((current) => current.filter((id) => id !== todoId))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setSnoozingReminderIds((current) => current.filter((id) => id !== todoId))
+    }
+  }
+
+  const handleDismissAlarm = (todoId: number) => {
+    dismissReminder(todoId)
+    setDismissedReminderTodoIds((current) => (current.includes(todoId) ? current : [...current, todoId]))
+  }
+
+  const parseTodoDate = (raw: string): Date => {
+    const hasTimezone = /Z$|[+-]\d{2}:\d{2}$/.test(raw)
+    if (!hasTimezone && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) {
+      return new Date(`${raw}+08:00`)
+    }
+    return new Date(raw)
+  }
+
+  const getNextAlarmAtMs = (todo: Todo): number | null => {
+    if (todo.completed || !todo.dueDate || todo.reminderMinutes === null) return null
+
+    const dueDateMs = parseTodoDate(todo.dueDate).getTime()
+    if (isNaN(dueDateMs)) return null
+
+    let nextAlarmAtMs = dueDateMs - todo.reminderMinutes * 60 * 1000
+    if (todo.snoozedUntil) {
+      const snoozedUntilMs = new Date(todo.snoozedUntil).getTime()
+      if (!isNaN(snoozedUntilMs) && snoozedUntilMs > nextAlarmAtMs) {
+        nextAlarmAtMs = snoozedUntilMs
+      }
+    }
+
+    return nextAlarmAtMs
+  }
+
+  const formatAlarmCountdown = (remainingMs: number): string => {
+    if (remainingMs <= 0) return 'now'
+
+    const totalMinutes = Math.ceil(remainingMs / 60000)
+    if (totalMinutes < 60) return `in ${totalMinutes}m`
+
+    const hours = Math.floor(totalMinutes / 60)
+    const minutes = totalMinutes % 60
+    if (hours < 24) {
+      if (minutes === 0) return `in ${hours}h`
+      return `in ${hours}h ${minutes}m`
+    }
+
+    const days = Math.floor(hours / 24)
+    const remainingHours = hours % 24
+    if (remainingHours === 0) return `in ${days}d`
+    return `in ${days}d ${remainingHours}h`
+  }
+
+  const formatElapsedDuration = (elapsedMs: number): string => {
+    const totalMinutes = Math.max(1, Math.floor(elapsedMs / 60000))
+    if (totalMinutes < 60) return `${totalMinutes}m`
+
+    const hours = Math.floor(totalMinutes / 60)
+    const minutes = totalMinutes % 60
+    if (hours < 24) {
+      if (minutes === 0) return `${hours}h`
+      return `${hours}h ${minutes}m`
+    }
+
+    const days = Math.floor(hours / 24)
+    const remainingHours = hours % 24
+    if (remainingHours === 0) return `${days}d`
+    return `${days}d ${remainingHours}h`
+  }
+
+  const getOverdueLabel = (todo: Todo): string | null => {
+    if (todo.completed || !todo.dueDate) return null
+    const dueDateMs = parseTodoDate(todo.dueDate).getTime()
+    if (isNaN(dueDateMs)) return null
+
+    const overdueMs = countdownNowMs - dueDateMs
+    if (overdueMs <= 0) return null
+
+    return `Overdue by ${formatElapsedDuration(overdueMs)}`
   }
 
   // Filter todos based on search and priority
@@ -454,7 +617,9 @@ export default function Home() {
           <div className="mb-8">
             <h3 className="text-xl font-semibold text-white mb-4">Active Todos ({activeTodos.length})</h3>
             <div className="space-y-2">
-              {activeTodos.map((todo) => (
+              {activeTodos.map((todo) => {
+                const overdueLabel = getOverdueLabel(todo)
+                return (
                 <div
                   key={todo.id}
                   className={`bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm rounded-lg p-4 flex items-center gap-4 transition-colors ${getPriorityBgColor(todo.priority)} ${
@@ -465,6 +630,7 @@ export default function Home() {
                     type="checkbox"
                     checked={todo.completed}
                     onChange={() => handleToggle(todo)}
+                    disabled={togglingTodoIds.includes(todo.id)}
                     className="w-5 h-5 rounded border-2 border-slate-600 bg-slate-700 text-blue-500 focus:ring-2 focus:ring-blue-500 cursor-pointer"
                   />
 
@@ -475,6 +641,11 @@ export default function Home() {
                     {todo.dueDate && (
                       <p className={`text-xs mt-1.5 font-medium ${isOverdue(todo) ? 'text-red-400' : 'text-slate-400'}`}>
                         📅 {formatSingaporeDate(new Date(todo.dueDate))}
+                      </p>
+                    )}
+                    {overdueLabel && (
+                      <p className="text-xs mt-1 text-red-300 font-semibold">
+                        ⚠ {overdueLabel}
                       </p>
                     )}
                   </div>
@@ -490,9 +661,17 @@ export default function Home() {
                   )}
 
                   {todo.reminderMinutes !== null && (
-                    <div className="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap bg-orange-500/20 text-orange-300 border border-orange-500/30">
-                      🔔 {getReminderLabel(todo.reminderMinutes)}
-                    </div>
+                    (() => {
+                      const nextAlarmAtMs = getNextAlarmAtMs(todo)
+                      const shouldHideAlarm = dismissedReminderTodoIds.includes(todo.id)
+                      if (nextAlarmAtMs === null || shouldHideAlarm) return null
+
+                      return (
+                        <div className="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap bg-orange-500/20 text-orange-300 border border-orange-500/30">
+                          🔔 {formatAlarmCountdown(nextAlarmAtMs - countdownNowMs)}
+                        </div>
+                      )
+                    })()
                   )}
 
                   <button
@@ -502,7 +681,7 @@ export default function Home() {
                     ✕
                   </button>
                 </div>
-              ))}
+              )})}
             </div>
           </div>
         )}
@@ -521,6 +700,7 @@ export default function Home() {
                     type="checkbox"
                     checked={todo.completed}
                     onChange={() => handleToggle(todo)}
+                    disabled={togglingTodoIds.includes(todo.id)}
                     className="w-5 h-5 rounded border-2 border-slate-600 bg-slate-700 text-blue-500 focus:ring-2 focus:ring-blue-500 cursor-pointer"
                   />
 
@@ -592,9 +772,32 @@ export default function Home() {
           <div className="bg-slate-800 border border-orange-400/50 rounded-xl shadow-2xl p-4">
             <p className="text-orange-300 font-semibold mb-1">Reminder</p>
             <p className="text-white text-sm mb-4">{pendingReminders[0].title}</p>
+            <div className="mb-3">
+              <label className="block text-xs text-slate-300 mb-1">Snooze for</label>
+              <select
+                value={selectedSnoozeMinutes}
+                onChange={(e) => setSelectedSnoozeMinutes(Number(e.target.value))}
+                className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {REMINDER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="flex gap-2">
               <button
-                onClick={() => dismissReminder(pendingReminders[0].id)}
+                onClick={() => handleSnoozeReminder(pendingReminders[0].id, selectedSnoozeMinutes)}
+                disabled={snoozingReminderIds.includes(pendingReminders[0].id)}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-900/60 disabled:cursor-not-allowed text-white font-medium py-2 px-3 rounded-lg transition"
+              >
+                {snoozingReminderIds.includes(pendingReminders[0].id)
+                  ? 'Snoozing...'
+                  : `Snooze ${getReminderLabel(selectedSnoozeMinutes)}`}
+              </button>
+              <button
+                onClick={() => handleDismissAlarm(pendingReminders[0].id)}
                 className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-medium py-2 px-3 rounded-lg transition"
               >
                 Dismiss

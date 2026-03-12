@@ -10,6 +10,7 @@ export interface Todo {
   recurrencePattern: RecurrencePattern | null
   reminderMinutes: number | null
   lastNotificationSent: string | null
+  snoozedUntil: string | null
   completed: boolean
   createdAt: string
   updatedAt: string
@@ -30,6 +31,7 @@ export interface UpdateTodoInput {
   recurrencePattern?: RecurrencePattern | null
   reminderMinutes?: number | null
   lastNotificationSent?: string | null
+  snoozedUntil?: string | null
   completed?: boolean
 }
 
