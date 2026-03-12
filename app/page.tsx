@@ -20,6 +20,7 @@ export default function Home() {
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
+  const [showTemplatesView, setShowTemplatesView] = useState(false)
   const [templates, setTemplates] = useState<Template[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
   const [templateCategory, setTemplateCategory] = useState('')
@@ -185,22 +186,64 @@ export default function Home() {
 
   const selectedTemplate = selectedTemplateId ? templates.find((t) => t.id === selectedTemplateId) || null : null
 
+  const getTemplateCategoryLabel = (template: Template) => {
+    const category = template.category?.trim()
+    return category && category.length > 0 ? category : 'Uncategorized'
+  }
+
+  const groupedTemplates = templates.reduce<Record<string, Template[]>>((groups, template) => {
+    const category = getTemplateCategoryLabel(template)
+    if (!groups[category]) {
+      groups[category] = []
+    }
+    groups[category] = [...groups[category], template]
+    return groups
+  }, {})
+
+  const sortedTemplateGroups = Object.entries(groupedTemplates).sort(([left], [right]) => left.localeCompare(right))
+
+  const loadTemplateToForm = (template: Template) => {
+    setSelectedTemplateId(template.id)
+    setShowTemplatesView(false)
+    setShowAdvancedOptions(true)
+
+    setFormTitle(template.name)
+    setFormPriority(template.priority)
+
+    if (template.dueOffsetDays === null) {
+      setFormDueDate('')
+    } else {
+      const date = new Date(getSingaporeNow().getTime() + template.dueOffsetDays * 24 * 60 * 60 * 1000)
+      setFormDueDate(toDateTimeLocalValue(date))
+    }
+    setError(null)
+  }
+
   const handleLoadTemplateToForm = () => {
     if (!selectedTemplate) {
       setError('Select a template first')
       return
     }
 
-    setFormTitle(selectedTemplate.name)
-    setFormPriority(selectedTemplate.priority)
+    loadTemplateToForm(selectedTemplate)
+  }
 
-    if (selectedTemplate.dueOffsetDays === null) {
-      setFormDueDate('')
-    } else {
-      const date = new Date(getSingaporeNow().getTime() + selectedTemplate.dueOffsetDays * 24 * 60 * 60 * 1000)
-      setFormDueDate(toDateTimeLocalValue(date))
+  const useTemplate = async (templateId: number) => {
+    setSelectedTemplateId(templateId)
+    setIsUsingTemplate(true)
+    try {
+      const res = await fetch(`/api/templates/${templateId}/use`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to use template')
+
+      setError(null)
+      await fetchTodos()
+      setShowTemplatesView(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsUsingTemplate(false)
     }
-    setError(null)
   }
 
   const handleUseTemplate = async () => {
@@ -209,18 +252,26 @@ export default function Home() {
       return
     }
 
-    setIsUsingTemplate(true)
-    try {
-      const res = await fetch(`/api/templates/${selectedTemplateId}/use`, { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to use template')
+    await useTemplate(selectedTemplateId)
+  }
 
+  const deleteTemplate = async (templateId: number) => {
+    setSelectedTemplateId(templateId)
+
+    if (!window.confirm('Delete selected template? This cannot be undone.')) {
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/templates/${templateId}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to delete template')
+
+      setSelectedTemplateId((currentId) => (currentId === templateId ? null : currentId))
       setError(null)
-      await fetchTodos()
+      await fetchTemplates()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
-    } finally {
-      setIsUsingTemplate(false)
     }
   }
 
@@ -230,16 +281,29 @@ export default function Home() {
       return
     }
 
-    if (!window.confirm('Delete selected template? This cannot be undone.')) {
+    await deleteTemplate(selectedTemplateId)
+  }
+
+  const renameTemplate = async (template: Template) => {
+    setSelectedTemplateId(template.id)
+
+    const newName = window.prompt('New template name', template.name)
+    if (newName === null) return
+
+    if (!newName.trim()) {
+      setError('Template name cannot be empty')
       return
     }
 
     try {
-      const res = await fetch(`/api/templates/${selectedTemplateId}`, { method: 'DELETE' })
+      const res = await fetch(`/api/templates/${template.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+      })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to delete template')
+      if (!res.ok) throw new Error(data.error || 'Failed to rename template')
 
-      setSelectedTemplateId(null)
       setError(null)
       await fetchTemplates()
     } catch (err) {
@@ -253,28 +317,7 @@ export default function Home() {
       return
     }
 
-    const newName = window.prompt('New template name', selectedTemplate.name)
-    if (newName === null) return
-
-    if (!newName.trim()) {
-      setError('Template name cannot be empty')
-      return
-    }
-
-    try {
-      const res = await fetch(`/api/templates/${selectedTemplateId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName.trim() }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to rename template')
-
-      setError(null)
-      await fetchTemplates()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred')
-    }
+    await renameTemplate(selectedTemplate)
   }
 
   const handleDelete = async (id: number) => {
@@ -351,7 +394,10 @@ export default function Home() {
             <button className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
               📅 Calendar
             </button>
-            <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            <button
+              onClick={() => setShowTemplatesView((prev) => !prev)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
               🎁 Templates
             </button>
             <button className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors">
@@ -675,6 +721,100 @@ export default function Home() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showTemplatesView && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowTemplatesView(false)}
+        >
+          <div
+            data-testid="templates-view"
+            className="w-full max-w-5xl max-h-[85vh] overflow-y-auto bg-slate-800/95 border border-slate-700 shadow-2xl rounded-2xl p-6 md:p-8"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-2xl font-semibold text-white">Templates Library</h3>
+                <p className="text-sm text-slate-400 mt-1">Browse saved templates grouped by category.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTemplatesView(false)}
+                className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+
+            {sortedTemplateGroups.length === 0 ? (
+              <div className="border border-dashed border-slate-600 rounded-xl p-8 text-center text-slate-400">
+                No templates saved yet. Use Save Template under Advanced Options to add one.
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {sortedTemplateGroups.map(([category, categoryTemplates]) => (
+                  <section key={category} className="space-y-3">
+                    <h3 className="text-lg font-semibold text-white">{category}</h3>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      {categoryTemplates.map((template) => (
+                        <div
+                          key={template.id}
+                          data-testid="template-card"
+                          className="bg-slate-900/60 border border-slate-700 rounded-xl p-4 space-y-4"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-white font-semibold">{template.name}</p>
+                              <p className="text-xs text-slate-400 mt-1">
+                                {template.dueOffsetDays === null ? 'No due date' : `Due in ${template.dueOffsetDays} day(s)`}
+                              </p>
+                            </div>
+                            <span className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getPriorityColor(template.priority)}`}>
+                              {template.priority.toUpperCase()}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => loadTemplateToForm(template)}
+                              className="bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+                            >
+                              Load
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => useTemplate(template.id)}
+                              disabled={isUsingTemplate}
+                              className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-600 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+                            >
+                              Use
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => renameTemplate(template)}
+                              className="bg-slate-600 hover:bg-slate-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteTemplate(template.id)}
+                              className="bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
