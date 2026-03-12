@@ -56,6 +56,51 @@ export default function Home() {
   const [templateCategory, setTemplateCategory] = useState('')
   const [isSavingTemplate, setIsSavingTemplate] = useState(false)
   const [isUsingTemplate, setIsUsingTemplate] = useState(false)
+  const [showCalendarView, setShowCalendarView] = useState(false)
+  const [holidays, setHolidays] = useState<Array<{ id: number; date: string; name: string }>>([
+    // Singapore public holidays seeded as fallback (will be overridden by API)
+    // 2024
+    { id: 1,  date: '2024-01-01', name: "New Year's Day" },
+    { id: 2,  date: '2024-02-10', name: 'Chinese New Year' },
+    { id: 3,  date: '2024-02-11', name: 'Second Day of Chinese New Year' },
+    { id: 4,  date: '2024-02-12', name: 'Chinese New Year (Day off)' },
+    { id: 5,  date: '2024-03-29', name: 'Good Friday' },
+    { id: 6,  date: '2024-04-10', name: 'Hari Raya Puasa' },
+    { id: 7,  date: '2024-05-01', name: 'Labour Day' },
+    { id: 8,  date: '2024-05-22', name: 'Vesak Day' },
+    { id: 9,  date: '2024-06-17', name: 'Hari Raya Haji' },
+    { id: 10, date: '2024-08-09', name: 'National Day' },
+    { id: 11, date: '2024-10-31', name: 'Deepavali' },
+    { id: 12, date: '2024-12-25', name: 'Christmas Day' },
+    // 2025
+    { id: 13, date: '2025-01-01', name: "New Year's Day" },
+    { id: 14, date: '2025-01-29', name: 'Chinese New Year' },
+    { id: 15, date: '2025-01-30', name: 'Second Day of Chinese New Year' },
+    { id: 16, date: '2025-03-31', name: 'Hari Raya Puasa' },
+    { id: 17, date: '2025-04-18', name: 'Good Friday' },
+    { id: 18, date: '2025-05-01', name: 'Labour Day' },
+    { id: 19, date: '2025-05-12', name: 'Vesak Day' },
+    { id: 20, date: '2025-06-07', name: 'Hari Raya Haji' },
+    { id: 21, date: '2025-08-09', name: 'National Day' },
+    { id: 22, date: '2025-10-20', name: 'Deepavali' },
+    { id: 23, date: '2025-12-25', name: 'Christmas Day' },
+    // 2026
+    { id: 24, date: '2026-01-01', name: "New Year's Day" },
+    { id: 25, date: '2026-02-17', name: 'Chinese New Year' },
+    { id: 26, date: '2026-02-18', name: 'Second Day of Chinese New Year' },
+    { id: 27, date: '2026-03-21', name: 'Hari Raya Puasa' },
+    { id: 28, date: '2026-04-03', name: 'Good Friday' },
+    { id: 29, date: '2026-05-01', name: 'Labour Day' },
+    { id: 30, date: '2026-05-27', name: 'Hari Raya Haji' },
+    { id: 31, date: '2026-05-31', name: 'Vesak Day' },
+    { id: 32, date: '2026-06-01', name: 'Vesak Day (Day off)' },
+    { id: 33, date: '2026-08-09', name: 'National Day' },
+    { id: 34, date: '2026-08-10', name: 'National Day (Day off)' },
+    { id: 35, date: '2026-11-08', name: 'Deepavali' },
+    { id: 36, date: '2026-11-09', name: 'Deepavali (Day off)' },
+    { id: 37, date: '2026-12-25', name: 'Christmas Day' },
+  ])
+  const [currentCalendarDate, setCurrentCalendarDate] = useState<Date>(() => getSingaporeNow())
 
   // Fetch todos on mount
   useEffect(() => {
@@ -86,7 +131,7 @@ export default function Home() {
         router.replace('/login')
         return
       }
-      await Promise.all([fetchTodos(), fetchTemplates()])
+      await Promise.all([fetchTodos(), fetchTemplates(), fetchHolidays()])
     } catch {
       router.replace('/login')
     }
@@ -100,6 +145,19 @@ export default function Home() {
       setTemplates(data.data || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
+    }
+  }
+
+  const fetchHolidays = async () => {
+    try {
+      const res = await fetch('/api/holidays')
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.data?.length) {
+        setHolidays(data.data)
+      }
+    } catch {
+      // Keep using fallback holidays already in state
     }
   }
 
@@ -607,6 +665,48 @@ export default function Home() {
     return `Overdue by ${formatElapsedDuration(overdueMs)}`
   }
 
+  // Calendar helper functions
+  const getDaysInMonth = (date: Date): number => {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+  }
+
+  const getFirstDayOfMonth = (date: Date): number => {
+    return new Date(date.getFullYear(), date.getMonth(), 1).getDay()
+  }
+
+  const getDateString = (year: number, month: number, day: number): string => {
+    return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+
+  const getTodosForDate = (dateStr: string): Todo[] => {
+    return todos.filter((todo) => {
+      if (!todo.dueDate) return false
+      const todoDueDate = parseTodoDate(todo.dueDate).toISOString().split('T')[0]
+      return todoDueDate === dateStr
+    })
+  }
+
+  const getHolidayForDate = (dateStr: string): string | null => {
+    const holiday = holidays.find((h) => h.date === dateStr)
+    return holiday ? holiday.name : null
+  }
+
+  const previousMonth = () => {
+    setCurrentCalendarDate(
+      new Date(currentCalendarDate.getFullYear(), currentCalendarDate.getMonth() - 1, 1)
+    )
+  }
+
+  const nextMonth = () => {
+    setCurrentCalendarDate(
+      new Date(currentCalendarDate.getFullYear(), currentCalendarDate.getMonth() + 1, 1)
+    )
+  }
+
+  const goToToday = () => {
+    setCurrentCalendarDate(getSingaporeNow())
+  }
+
   // Filter todos based on search and priority
   const filteredTodos = todos.filter((todo) => {
     const matchesSearch = todo.title.toLowerCase().includes(searchQuery.toLowerCase())
@@ -629,7 +729,10 @@ export default function Home() {
             <button className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
               📊 Data
             </button>
-            <button className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            <button
+              onClick={() => setShowCalendarView((prev) => !prev)}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
               📅 Calendar
             </button>
             <button
@@ -1201,6 +1304,184 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {showCalendarView && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowCalendarView(false)}
+        >
+          <div
+            className="w-full max-w-5xl max-h-[90vh] overflow-y-auto bg-slate-800/95 border border-slate-700 shadow-2xl rounded-2xl p-6 md:p-8"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {/* Calendar Header */}
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <h3 className="text-2xl font-semibold text-white">Monthly Calendar</h3>
+                <p className="text-sm text-slate-400 mt-1">View your todos across the month.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCalendarView(false)}
+                className="bg-slate-700 hover:bg-slate-600 text-slate-100 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Month Navigation */}
+            <div className="flex items-center justify-between gap-4 mb-6">
+              <button
+                type="button"
+                onClick={previousMonth}
+                className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+              >
+                ← Previous
+              </button>
+              <div className="text-center">
+                <h2 className="text-xl font-bold text-white">
+                  {currentCalendarDate.toLocaleDateString('en-US', {
+                    month: 'long',
+                    year: 'numeric',
+                  })}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={nextMonth}
+                className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+              >
+                Next →
+              </button>
+            </div>
+
+            {/* Today Button */}
+            <div className="flex justify-center mb-6">
+              <button
+                type="button"
+                onClick={goToToday}
+                className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+              >
+                Today
+              </button>
+            </div>
+
+            {/* Calendar Grid */}
+            <div className="bg-slate-900/50 rounded-xl p-4 overflow-x-auto">
+              <div className="grid grid-cols-7 gap-2 min-w-full">
+                {/* Day headers */}
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+                  <div key={day} className="p-2 text-center font-bold text-slate-300 text-sm">
+                    {day}
+                  </div>
+                ))}
+
+                {/* Empty cells for days before month starts */}
+                {Array.from({ length: getFirstDayOfMonth(currentCalendarDate) }).map((_, idx) => (
+                  <div key={`empty-${idx}`} className="p-2 min-h-24 bg-slate-900/30 rounded-lg" />
+                ))}
+
+                {/* Calendar cells */}
+                {Array.from({ length: getDaysInMonth(currentCalendarDate) }).map((_, idx) => {
+                  const day = idx + 1
+                  const dateStr = getDateString(currentCalendarDate.getFullYear(), currentCalendarDate.getMonth(), day)
+                  const dayTodos = getTodosForDate(dateStr)
+                  const holiday = getHolidayForDate(dateStr)
+                  const isToday =
+                    day === getSingaporeNow().getDate() &&
+                    currentCalendarDate.getMonth() === getSingaporeNow().getMonth() &&
+                    currentCalendarDate.getFullYear() === getSingaporeNow().getFullYear()
+
+                  return (
+                    <div
+                      key={day}
+                      className={`p-2 min-h-24 rounded-lg border-2 transition-colors font-medium ${
+                        holiday
+                          ? 'bg-emerald-500/40 border-emerald-500 text-emerald-50'
+                          : isToday
+                          ? 'bg-blue-900/40 border-blue-500'
+                          : 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-700/50'
+                      }`}
+                    >
+                      <div className="flex flex-col h-full">
+                        <div className={`text-sm font-bold mb-1 ${holiday ? 'text-emerald-100' : 'text-white'}`}>{day}</div>
+
+                        {/* Holiday badge and name */}
+                        {holiday && (
+                          <div className="bg-emerald-600/60 text-emerald-50 px-2 py-1 rounded text-xs font-semibold mb-1 truncate">
+                            🏛️ {holiday}
+                          </div>
+                        )}
+
+                        {/* Today indicator */}
+                        {isToday && !holiday && <div className="text-xs text-blue-200 font-semibold mb-1">📍 Today</div>}
+
+                        {/* Todo badges */}
+                        <div className="flex flex-wrap gap-1">
+                          {dayTodos.map((todo) => (
+                            <div
+                              key={todo.id}
+                              className={`text-xs px-2 py-1 rounded font-medium truncate ${getPriorityColor(todo.priority)}`}
+                              title={todo.title}
+                            >
+                              {todo.priority === 'high' ? '●' : todo.priority === 'medium' ? '◐' : '○'} {todo.title.substring(0, 8)}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Todo count indicator */}
+                        {dayTodos.length > 2 && (
+                          <div className={`text-xs mt-auto pt-1 ${holiday ? 'text-emerald-200' : 'text-slate-400'}`}>+{dayTodos.length - 2} more</div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Holidays for this month */}
+            {holidays.length > 0 && (
+              <div className="mt-6 bg-slate-700/50 border border-emerald-500/50 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-emerald-300 mb-3">🏛️ Holidays This Month</h4>
+                {holidays.filter(h => h.date.startsWith(currentCalendarDate.getFullYear() + '-' + String(currentCalendarDate.getMonth() + 1).padStart(2, '0'))).length > 0 ? (
+                  <div className="space-y-2">
+                    {holidays.filter(h => h.date.startsWith(currentCalendarDate.getFullYear() + '-' + String(currentCalendarDate.getMonth() + 1).padStart(2, '0'))).map(h => (
+                      <div key={h.date} className="flex items-center justify-between bg-emerald-900/40 border border-emerald-600/50 rounded px-3 py-2 text-sm">
+                        <span className="text-emerald-100 font-medium">{h.name}</span>
+                        <span className="text-emerald-300 text-xs">{new Date(h.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-slate-400 text-sm">No holidays this month</p>
+                )}
+              </div>
+            )}
+
+            {/* Legend */}
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 bg-red-500/30 border border-red-500/50 rounded" />
+                <span className="text-slate-300">High Priority</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 bg-yellow-500/30 border border-yellow-500/50 rounded" />
+                <span className="text-slate-300">Medium Priority</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 bg-blue-500/30 border border-blue-500/50 rounded" />
+                <span className="text-slate-300">Low Priority</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 bg-emerald-500/40 border border-emerald-500 rounded" />
+                <span className="text-slate-300">🏛️ Holiday</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+

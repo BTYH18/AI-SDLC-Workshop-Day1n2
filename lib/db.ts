@@ -10,7 +10,8 @@ import {
   Authenticator,
   Template,
   CreateTemplateInput,
-  UpdateTemplateInput
+  UpdateTemplateInput,
+  Holiday
 } from './types'
 import { getSingaporeNow } from './timezone'
 
@@ -138,6 +139,17 @@ export async function initializeDb() {
     } catch {
       // Column already exists
     }
+
+    // holidays table - for Singapore public holidays
+    sqlDb.run(`
+      CREATE TABLE IF NOT EXISTS holidays (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `)
+    sqlDb.run('CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date)')
 
     // backfill legacy todos to first user so existing data remains visible
     const firstUserRes = sqlDb.exec('SELECT id FROM users ORDER BY id LIMIT 1')
@@ -372,7 +384,7 @@ export const todoDB = {
         lastNotificationSent: row[4] ? String(row[4]) : null,
         snoozedUntil: row[5] ? String(row[5]) : null,
       }))
-      .filter((todo) => {
+      .filter((todo: any) => {
         const dueDate = parseDueDate(todo.dueDate)
         const dueMs = dueDate.getTime()
         if (isNaN(dueMs) || !Number.isFinite(todo.reminderMinutes)) return false
@@ -393,7 +405,7 @@ export const todoDB = {
         if (isNaN(lastSentMs)) return true
         return nowMs - lastSentMs >= fifteenMinutesMs
       })
-      .map((todo) => ({ id: todo.id, title: todo.title }))
+      .map((todo: any) => ({ id: todo.id, title: todo.title }))
   },
 
   markNotificationsSent: async (userId: number, todoIds: number[], sentAtIso: string): Promise<void> => {
@@ -574,6 +586,69 @@ export const templateDB = {
     db.run('DELETE FROM templates WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
+  },
+}
+
+// holidays operations
+export const holidayDB = {
+  create: async (date: string, name: string): Promise<Holiday> => {
+    const db = await getDb()
+    const now = new Date().toISOString()
+    db.run(
+      `INSERT INTO holidays (date, name, created_at) VALUES (?, ?, ?)`,
+      [date, name, now]
+    )
+    const result = db.exec('SELECT last_insert_rowid() as id')
+    const id = result[0]?.values[0]?.[0] as number
+    saveDb()
+    return { id, date, name, createdAt: now }
+  },
+
+  getAll: async (): Promise<Holiday[]> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, date, name, created_at as createdAt FROM holidays ORDER BY date ASC`
+    )
+    if (!result[0]) return []
+    const columnNames = result[0].columns
+    return result[0].values.map((row: any[]) => {
+      const obj: any = {}
+      columnNames.forEach((col: string, idx: number) => {
+        obj[col] = row[idx]
+      })
+      return obj as Holiday
+    })
+  },
+
+  getByDate: async (date: string): Promise<Holiday | null> => {
+    const db = await getDb()
+    const result = db.exec(
+      `SELECT id, date, name, created_at as createdAt FROM holidays WHERE date = ?`,
+      [date]
+    )
+    if (!result[0] || !result[0].values[0]) return null
+    const columnNames = result[0].columns
+    const row = result[0].values[0]
+    const obj: any = {}
+    columnNames.forEach((col: string, idx: number) => {
+      obj[col] = row[idx]
+    })
+    return obj as Holiday
+  },
+
+  delete: async (id: number): Promise<boolean> => {
+    const db = await getDb()
+    const result = db.exec('SELECT id FROM holidays WHERE id = ?', [id])
+    if (!result[0] || !result[0].values[0]) return false
+    db.run('DELETE FROM holidays WHERE id = ?', [id])
+    saveDb()
+    return true
+  },
+
+  deleteAll: async (): Promise<void> => {
+    const db = await getDb()
+    db.run('DELETE FROM holidays')
+    saveDb()
   },
 }
 

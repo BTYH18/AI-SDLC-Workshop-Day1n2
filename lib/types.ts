@@ -96,3 +96,11 @@ export interface UpdateTemplateInput {
   tagsJson?: string
   dueOffsetDays?: number | null
 }
+
+// Holiday model
+export interface Holiday {
+  id: number
+  date: string
+  name: string
+  createdAt: string
+}
