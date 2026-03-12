@@ -3,6 +3,9 @@ import { getSession } from '@/lib/auth'
 import { todoDB, subtaskDB } from '@/lib/db'
 import { ApiResponse, CreateSubtaskInput, Subtask } from '@/lib/types'
 
+const MAX_SUBTASKS_PER_TODO = 50
+const MAX_SUBTASK_TITLE_LENGTH = 500
+
 interface RouteParams {
   params: Promise<{ id: string }>
 }
@@ -92,6 +95,21 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (!body.title || body.title.trim() === '') {
       return NextResponse.json(
         { success: false, error: 'Subtask title is required' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
+    if (body.title.trim().length > MAX_SUBTASK_TITLE_LENGTH) {
+      return NextResponse.json(
+        { success: false, error: `Subtask title too long (max ${MAX_SUBTASK_TITLE_LENGTH} characters)` } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
+    const existingSubtasks = await subtaskDB.listByTodoId(todoId)
+    if (existingSubtasks.length >= MAX_SUBTASKS_PER_TODO) {
+      return NextResponse.json(
+        { success: false, error: `Maximum ${MAX_SUBTASKS_PER_TODO} subtasks per todo` } as ApiResponse<null>,
         { status: 400 }
       )
     }

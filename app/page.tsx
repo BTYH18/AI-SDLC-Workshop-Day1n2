@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Todo, Priority, Subtask } from '@/lib/types'
 import { formatSingaporeDate, getSingaporeNow } from '@/lib/timezone'
+import { calculateSubtaskProgress } from '@/lib/subtasks'
 
 export default function Home() {
   const router = useRouter()
@@ -22,6 +23,9 @@ export default function Home() {
   const [expandedTodoIds, setExpandedTodoIds] = useState<number[]>([])
   const [subtasksByTodoId, setSubtasksByTodoId] = useState<Record<number, Subtask[]>>({})
   const [newSubtaskTitleByTodoId, setNewSubtaskTitleByTodoId] = useState<Record<number, string>>({})
+  const [editingSubtaskByTodoId, setEditingSubtaskByTodoId] = useState<Record<number, number | null>>({})
+  const [editingSubtaskTitleById, setEditingSubtaskTitleById] = useState<Record<number, string>>({})
+  const [draggingSubtaskByTodoId, setDraggingSubtaskByTodoId] = useState<Record<number, number | null>>({})
 
   // Fetch todos on mount
   useEffect(() => {
@@ -229,13 +233,47 @@ export default function Home() {
 
   const getSubtaskProgress = (todoId: number) => {
     const subtasks = subtasksByTodoId[todoId] || []
-    if (subtasks.length === 0) {
-      return { total: 0, completed: 0, percent: 0 }
+    return calculateSubtaskProgress(subtasks)
+  }
+
+  const startSubtaskEdit = (todoId: number, subtask: Subtask) => {
+    setEditingSubtaskByTodoId((prev) => ({ ...prev, [todoId]: subtask.id }))
+    setEditingSubtaskTitleById((prev) => ({ ...prev, [subtask.id]: subtask.title }))
+  }
+
+  const cancelSubtaskEdit = (todoId: number, subtaskId: number) => {
+    setEditingSubtaskByTodoId((prev) => ({ ...prev, [todoId]: null }))
+    setEditingSubtaskTitleById((prev) => ({ ...prev, [subtaskId]: '' }))
+  }
+
+  const saveSubtaskEdit = async (todoId: number, subtaskId: number) => {
+    const nextTitle = editingSubtaskTitleById[subtaskId]?.trim() || ''
+    if (!nextTitle) {
+      setError('Subtask title must be non-empty')
+      return
     }
 
-    const completed = subtasks.filter((subtask) => subtask.completed).length
-    const percent = Math.round((completed / subtasks.length) * 100)
-    return { total: subtasks.length, completed, percent }
+    await handleUpdateSubtask(todoId, subtaskId, { title: nextTitle })
+    setEditingSubtaskByTodoId((prev) => ({ ...prev, [todoId]: null }))
+  }
+
+  const handleSubtaskDragStart = (todoId: number, subtaskId: number) => {
+    setDraggingSubtaskByTodoId((prev) => ({ ...prev, [todoId]: subtaskId }))
+  }
+
+  const handleSubtaskDrop = async (todoId: number, targetPosition: number) => {
+    const draggingSubtaskId = draggingSubtaskByTodoId[todoId]
+    if (!draggingSubtaskId) return
+
+    const subtasks = subtasksByTodoId[todoId] || []
+    const currentSubtask = subtasks.find((subtask) => subtask.id === draggingSubtaskId)
+    if (!currentSubtask || currentSubtask.position === targetPosition) {
+      setDraggingSubtaskByTodoId((prev) => ({ ...prev, [todoId]: null }))
+      return
+    }
+
+    await handleUpdateSubtask(todoId, draggingSubtaskId, { position: targetPosition })
+    setDraggingSubtaskByTodoId((prev) => ({ ...prev, [todoId]: null }))
   }
 
   const getPriorityColor = (priority: Priority) => {
@@ -476,7 +514,10 @@ export default function Home() {
                               <span>{progress.completed}/{progress.total} ({progress.percent}%)</span>
                             </div>
                             <div className="h-2 bg-slate-700 rounded-full overflow-hidden" data-testid={`progress-bar-${todo.id}`}>
-                              <div className="h-2 bg-blue-500 rounded-full transition-all" style={{ width: `${progress.percent}%` }} />
+                              <div
+                                className={`h-2 rounded-full transition-all ${progress.percent === 100 ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                                style={{ width: `${progress.percent}%` }}
+                              />
                             </div>
                           </div>
                         )}
@@ -508,17 +549,84 @@ export default function Home() {
                           <p className="text-sm text-slate-500">No subtasks yet</p>
                         )}
 
-                        {subtasks.map((subtask, index) => (
-                          <div key={subtask.id} className="flex items-center gap-2" data-testid="subtask-item">
+                        {subtasks.map((subtask, index) => {
+                          const isEditing = editingSubtaskByTodoId[todo.id] === subtask.id
+                          return (
+                          <div
+                            key={subtask.id}
+                            className={`flex items-center gap-2 ${draggingSubtaskByTodoId[todo.id] === subtask.id ? 'opacity-50' : ''}`}
+                            data-testid="subtask-item"
+                            draggable
+                            onDragStart={() => handleSubtaskDragStart(todo.id, subtask.id)}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={() => handleSubtaskDrop(todo.id, index)}
+                            onDragEnd={() => setDraggingSubtaskByTodoId((prev) => ({ ...prev, [todo.id]: null }))}
+                          >
+                            <button
+                              type="button"
+                              aria-label="Drag subtask"
+                              className="text-slate-500 hover:text-slate-300 cursor-grab"
+                            >
+                              ⋮⋮
+                            </button>
                             <input
                               type="checkbox"
                               checked={subtask.completed}
                               onChange={() => handleUpdateSubtask(todo.id, subtask.id, { completed: !subtask.completed })}
                               className="w-4 h-4 rounded border border-slate-600 bg-slate-700 text-blue-500 focus:ring-blue-500"
                             />
-                            <p className={`flex-1 text-sm ${subtask.completed ? 'line-through text-slate-500' : 'text-slate-300'}`}>
-                              {subtask.title}
-                            </p>
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingSubtaskTitleById[subtask.id] || ''}
+                                onChange={(event) => setEditingSubtaskTitleById((prev) => ({ ...prev, [subtask.id]: event.target.value }))}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    saveSubtaskEdit(todo.id, subtask.id)
+                                  }
+                                  if (event.key === 'Escape') {
+                                    event.preventDefault()
+                                    cancelSubtaskEdit(todo.id, subtask.id)
+                                  }
+                                }}
+                                className="flex-1 px-2 py-1 bg-slate-700 border border-slate-600 rounded text-sm text-white"
+                                autoFocus
+                              />
+                            ) : (
+                              <p
+                                className={`flex-1 text-sm ${subtask.completed ? 'line-through text-slate-500' : 'text-slate-300'}`}
+                                onDoubleClick={() => startSubtaskEdit(todo.id, subtask)}
+                              >
+                                {subtask.title}
+                              </p>
+                            )}
+                            {isEditing ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => saveSubtaskEdit(todo.id, subtask.id)}
+                                  className="px-2 py-0.5 text-xs rounded bg-emerald-700 text-emerald-200"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => cancelSubtaskEdit(todo.id, subtask.id)}
+                                  className="px-2 py-0.5 text-xs rounded bg-slate-700 text-slate-300"
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => startSubtaskEdit(todo.id, subtask)}
+                                className="text-slate-400 hover:text-slate-200 text-xs"
+                              >
+                                Edit
+                              </button>
+                            )}
                             <button
                               type="button"
                               disabled={index === 0}
@@ -542,7 +650,7 @@ export default function Home() {
                               ✕
                             </button>
                           </div>
-                        ))}
+                        )})}
 
                         <div className="flex items-center gap-2 pt-1">
                           <input

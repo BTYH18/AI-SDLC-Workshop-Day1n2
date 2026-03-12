@@ -3,6 +3,8 @@ import { getSession } from '@/lib/auth'
 import { todoDB, subtaskDB } from '@/lib/db'
 import { ApiResponse, Subtask, UpdateSubtaskInput } from '@/lib/types'
 
+const MAX_SUBTASK_TITLE_LENGTH = 500
+
 interface RouteParams {
   params: Promise<{ id: string; subtaskId: string }>
 }
@@ -44,6 +46,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (body.title !== undefined && body.title.trim() === '') {
       return NextResponse.json(
         { success: false, error: 'Subtask title must be non-empty' } as ApiResponse<null>,
+        { status: 400 }
+      )
+    }
+
+    if (body.title !== undefined && body.title.trim().length > MAX_SUBTASK_TITLE_LENGTH) {
+      return NextResponse.json(
+        { success: false, error: `Subtask title too long (max ${MAX_SUBTASK_TITLE_LENGTH} characters)` } as ApiResponse<null>,
         { status: 400 }
       )
     }

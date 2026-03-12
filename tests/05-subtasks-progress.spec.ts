@@ -32,14 +32,31 @@ test.describe('Subtasks and Progress', () => {
     await helper.addSubtask('Launch feature', 'Task B')
 
     const todoCard = page.locator('p:has-text("Launch feature")').first().locator('../..')
-    const taskBRow = todoCard.locator('[data-testid="subtask-item"]').filter({ hasText: 'Task B' }).first()
-    await taskBRow.locator('button:has-text("↑")').click()
+    const rows = todoCard.locator('[data-testid="subtask-item"]')
+    const taskBRow = rows.filter({ hasText: 'Task B' }).first()
+    const taskARow = rows.filter({ hasText: 'Task A' }).first()
+    await taskBRow.dragTo(taskARow)
 
     const reorderedItems = todoCard.locator('[data-testid="subtask-item"] p')
     await expect(reorderedItems.first()).toHaveText('Task B')
 
     await helper.deleteSubtask('Launch feature', 'Task A')
     await expect(todoCard.locator('[data-testid="subtask-item"]').filter({ hasText: 'Task A' })).toHaveCount(0)
+  })
+
+  test('should edit subtask title inline', async ({ page }) => {
+    await helper.createTodo('Edit feature')
+    await helper.addSubtask('Edit feature', 'Old title')
+
+    const todoCard = page.locator('p:has-text("Edit feature")').first().locator('../..')
+    const subtaskRow = todoCard.locator('[data-testid="subtask-item"]').filter({ hasText: 'Old title' }).first()
+
+    await subtaskRow.locator('button:has-text("Edit")').click()
+    const input = subtaskRow.locator('input[type="text"]').first()
+    await input.fill('Updated title')
+    await subtaskRow.locator('button:has-text("Save")').click()
+
+    await expect(todoCard.locator('[data-testid="subtask-item"]').filter({ hasText: 'Updated title' })).toHaveCount(1)
   })
 
   test('deleting parent todo should remove its subtasks', async ({ page, request }) => {

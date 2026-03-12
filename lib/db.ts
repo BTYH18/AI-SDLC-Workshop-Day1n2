@@ -12,6 +12,8 @@ import {
   CreateSubtaskInput,
   UpdateSubtaskInput
 } from './types'
+import { buildSequentialAssignments, calculateSubtaskProgressFromCounts, reorderSubtaskIds } from './subtasks'
+import { getSingaporeNow } from './timezone'
 
 const dbPath = path.join(process.cwd(), 'todos.db')
 let sqlDb: any = null
@@ -252,6 +254,8 @@ export const todoDB = {
     const db = await getDb()
     const todo = await todoDB.getById(userId, id)
     if (!todo) return false
+    // Defensive delete keeps behavior correct even if legacy databases lack FK cascade.
+    db.run('DELETE FROM subtasks WHERE todo_id = ?', [id])
     db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, userId])
     saveDb()
     return true
@@ -286,7 +290,8 @@ export const subtaskDB = {
 
   create: async (todoId: number, input: CreateSubtaskInput): Promise<Subtask> => {
     const db = await getDb()
-    const now = new Date().toISOString()
+    const now = getSingaporeNow().toISOString()
+    let id = 0
 
     let nextPosition = 0
     db.run('BEGIN TRANSACTION')
@@ -303,14 +308,13 @@ export const subtaskDB = {
          VALUES (?, ?, ?, 0, ?, ?)`,
         [todoId, input.title, nextPosition, now, now]
       )
+      const result = db.exec('SELECT last_insert_rowid() as id')
+      id = result[0]?.values[0]?.[0] as number
       db.run('COMMIT')
     } catch (error) {
       db.run('ROLLBACK')
       throw error
     }
-
-    const result = db.exec('SELECT last_insert_rowid() as id')
-    const id = result[0]?.values[0]?.[0] as number
 
     saveDb()
 
@@ -330,7 +334,7 @@ export const subtaskDB = {
     const existing = await subtaskDB.getById(subtaskId, todoId)
     if (!existing) return null
 
-    const now = new Date().toISOString()
+    const now = getSingaporeNow().toISOString()
     const updates: string[] = []
     const values: any[] = []
 
@@ -345,22 +349,18 @@ export const subtaskDB = {
 
     if (input.position !== undefined && Number.isInteger(input.position) && input.position >= 0 && input.position !== existing.position) {
       const allSubtasks = await subtaskDB.listByTodoId(todoId)
-      const withoutCurrent = allSubtasks.filter((item) => item.id !== subtaskId)
-      const boundedTarget = Math.min(input.position, withoutCurrent.length)
-      const reordered = [
-        ...withoutCurrent.slice(0, boundedTarget),
-        existing,
-        ...withoutCurrent.slice(boundedTarget),
-      ]
+      const orderedIds = allSubtasks.map((item) => item.id)
+      const reorderedIds = reorderSubtaskIds(orderedIds, subtaskId, input.position)
+      const reorderedAssignments = buildSequentialAssignments(reorderedIds)
 
       db.run('BEGIN TRANSACTION')
       try {
         // Two-phase updates avoid UNIQUE(todo_id, position) collisions during swaps.
-        reordered.forEach((item, index) => {
-          db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [-(index + 1), now, item.id, todoId])
+        reorderedAssignments.forEach((assignment) => {
+          db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [-(assignment.position + 1), now, assignment.id, todoId])
         })
-        reordered.forEach((item, index) => {
-          db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [index, now, item.id, todoId])
+        reorderedAssignments.forEach((assignment) => {
+          db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [assignment.position, now, assignment.id, todoId])
         })
         if (updates.length > 0) {
           updates.push('updated_at = ?')
@@ -401,6 +401,7 @@ export const subtaskDB = {
     const existing = await subtaskDB.getById(subtaskId, todoId)
     if (!existing) return false
 
+    const now = getSingaporeNow().toISOString()
     db.run('BEGIN TRANSACTION')
     try {
       db.run('DELETE FROM subtasks WHERE id = ? AND todo_id = ?', [subtaskId, todoId])
@@ -409,12 +410,13 @@ export const subtaskDB = {
         [todoId]
       )
       const remainingIds: number[] = (remainingResult[0]?.values || []).map((row: any[]) => Number(row[0]))
+      const assignments = buildSequentialAssignments(remainingIds)
 
-      remainingIds.forEach((id, index) => {
-        db.run('UPDATE subtasks SET position = ? WHERE id = ? AND todo_id = ?', [-(index + 1), id, todoId])
+      assignments.forEach((assignment) => {
+        db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [-(assignment.position + 1), now, assignment.id, todoId])
       })
-      remainingIds.forEach((id, index) => {
-        db.run('UPDATE subtasks SET position = ? WHERE id = ? AND todo_id = ?', [index, id, todoId])
+      assignments.forEach((assignment) => {
+        db.run('UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ? AND todo_id = ?', [assignment.position, now, assignment.id, todoId])
       })
       db.run('COMMIT')
     } catch (error) {
@@ -461,9 +463,7 @@ export const subtaskDB = {
 
     const total = Number(result[0]?.values?.[0]?.[0] ?? 0)
     const completed = Number(result[0]?.values?.[0]?.[1] ?? 0)
-    const percent = total === 0 ? 0 : Math.round((completed / total) * 100)
-
-    return { total, completed, percent }
+    return calculateSubtaskProgressFromCounts(total, completed)
   },
 }
 
